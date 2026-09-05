@@ -60,29 +60,27 @@ Rust AppState（唯一状态）
 
 ## 运行时目录
 
-首次运行会创建用户数据目录下的 `runtime/`，在 Windows 通常位于：
+采用便携模式：整套运行数据放在可执行文件同级目录 `tool/` 下，与 `aurora-launcher.exe` 一起整体拷贝即可迁移：
 
 ```text
-%APPDATA%\io\AuroraBot\AuroraLauncher\runtime\
+<exe 所在目录>/
+├── aurora-launcher.exe
+└── tool/                  运行根目录（可整体删除以重置）
+    ├── state/             settings.json 与安装记录
+    ├── downloads/         下载临时缓存
+    ├── staging/           未完成安装的 staging 目录
+    ├── tools/python/      uv 管理的 Python
+    ├── tools/uv/          uv
+    ├── tools/git/         MinGit
+    ├── tools/pnpm/        pnpm standalone
+    ├── env/aurora/        AuroraBot 独立 venv
+    ├── kernel/auroraBot/  AuroraBot Git 仓库
+    ├── home/              受管 HOME 与用户配置
+    ├── cache/             uv/pip/npm 缓存
+    └── logs/              Bot 与 launcher 日志
 ```
 
-```text
-runtime/
-├── state/             settings.json 与安装记录
-├── downloads/         下载临时缓存
-├── staging/           未完成安装的 staging 目录
-├── tools/python/      uv 管理的 Python
-├── tools/uv/          uv
-├── tools/git/         MinGit
-├── tools/pnpm/        pnpm standalone
-├── env/aurora/        AuroraBot 独立 venv
-├── kernel/auroraBot/  AuroraBot Git 仓库
-├── home/              受管 HOME 与用户配置
-├── cache/             uv/pip/npm 缓存
-└── logs/              Bot 与 launcher 日志
-```
-
-删除整个 `runtime/` 即完成运行时清理，launcher 不会修改宿主 PATH、注册表或全局 Python 环境。
+删除整个 `tool/` 即完成运行时清理，launcher 不会修改宿主 PATH、注册表或全局 Python 环境。
 
 ## 工具管理
 
@@ -101,6 +99,8 @@ runtime/
 ```
 
 工具安装目录按 `tools/<tool>/` 组织；重新安装时先切到 staging，再切回正式目录，避免留下半成品。
+
+工具就绪判定优先 launcher 自管目录：若自管未装、但系统 PATH 中存在可用版本（git/uv/python/pnpm），则直接复用并显示为“就绪”，不再重复下载；只有两处都没有时才联网下载到 `tool/tools/`。
 
 ## 环境隔离
 

@@ -13,7 +13,7 @@ directories = "5"
 flate2 = "1"
 futures-util = "0.3"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

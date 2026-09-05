@@ -18,7 +18,7 @@
               定位
             </n-button>
             <n-button :type="card.installed ? 'default' : 'primary'" size="tiny" style="width: 68px"
-              :loading="busyKey === card.key" :disabled="busyKey !== null && busyKey !== card.key"
+              :loading="busyKey === card.key" :disabled="botRunning || (busyKey !== null && busyKey !== card.key)"
               @click="installDependency(card)">
               {{ card.installed ? '重装' : '安装' }}
             </n-button>
@@ -104,6 +104,7 @@ const emit = defineEmits<{
 const appStore = useAppStore()
 const message = useMessage()
 const busyKey = ref<ToolKind | null>(null)
+const botRunning = computed(() => appStore.process?.running ?? false)
 
 const CUSTOM_PATH_STORAGE_KEY = 'aurora-custom-tool-paths'
 const customPaths = ref<Record<ToolKind, string>>(loadCustomPaths())
@@ -162,11 +163,12 @@ async function refresh() {
 }
 
 async function installDependency(card: DependencyCard) {
-  if (busyKey.value) return
+  if (busyKey.value || botRunning.value) return
   busyKey.value = card.key
   try {
-    await appStore.installOne(card.key)
-    message.success(`${card.name} 安装完成`)
+    // 已安装时按钮是“重装”→ 传 force=true 强制清掉受管副本后重装
+    await appStore.installOne(card.key, card.installed)
+    message.success(`${card.name} ${card.installed ? '重装' : '安装'}完成`)
   } catch (e: any) {
     message.error(e?.message || '安装失败')
   } finally {

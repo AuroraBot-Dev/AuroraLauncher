@@ -3,7 +3,6 @@ use std::process::Child;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::platform::{exe_suffix, is_windows};
@@ -29,10 +28,13 @@ pub struct RuntimePaths {
 
 impl RuntimePaths {
     pub fn default_user() -> Result<Self> {
-        let project = ProjectDirs::from("io", "AuroraBot", "AuroraLauncher")
-            .context("无法解析 AuroraLauncher 数据目录")?;
-        let data = project.data_dir().to_path_buf();
-        Ok(Self::from_root(data.join("runtime")))
+        // 便携模式：整套运行目录放在 exe 同级的 tool/ 下，随 exe 一起拷贝即迁移
+        let exe_dir = std::env::current_exe()
+            .context("无法定位当前可执行文件")?
+            .parent()
+            .context("可执行文件缺少父目录")?
+            .to_path_buf();
+        Ok(Self::from_root(exe_dir.join("tool")))
     }
 
     pub fn from_root(root: PathBuf) -> Self {
@@ -68,6 +70,12 @@ impl RuntimePaths {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
+        // 与 sandbox 注入的环境变量一一对应：TEMP/TMP、APPDATA、LOCALAPPDATA
+        // 都指向 home 下的子目录；uv/pip 等工具会直接往 TEMP 写临时文件，
+        // 目录不存在会报 “系统找不到指定的路径 (os error 3)”，故一并预建。
+        let home_temp = self.home.join("temp");
+        let home_appdata_roaming = self.home.join("AppData").join("Roaming");
+        let home_appdata_local = self.home.join("AppData").join("Local");
         for dir in [
             &self.root,
             &self.state_dir,
@@ -82,6 +90,9 @@ impl RuntimePaths {
             &self.kernel,
             &self.home,
             &self.logs,
+            &home_temp,
+            &home_appdata_roaming,
+            &home_appdata_local,
         ] {
             std::fs::create_dir_all(dir)
                 .with_context(|| format!("创建运行时目录失败: {}", dir.display()))?;

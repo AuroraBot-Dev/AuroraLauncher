@@ -40,7 +40,7 @@ import { darkThemeOverrides, lightThemeOverrides } from './theme'
 const appStore = useAppStore()
 
 const preferredTheme = ref<'dark' | 'light'>(
-  (localStorage.getItem('aurora-theme') as 'dark' | 'light') || 'dark'
+  (localStorage.getItem('aurora-theme') as 'dark' | 'light') || 'light'
 )
 const isDark = computed(() => preferredTheme.value === 'dark')
 const activeOverrides = computed(() => (isDark.value ? darkThemeOverrides : lightThemeOverrides))

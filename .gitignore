@@ -1,7 +1,126 @@
+## Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+## IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.code-workspace
+
+## Logs and local configuration
+*.log
+logs/
+*.pid
+*.seed
+*.local
+.env
+.env.*
+!.env.example
+
+## Java, Gradle, and Maven
+.gradle/
+build/
+out/
+target/
+bin/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+replay_pid*
+
+## Kotlin
+*.kotlin_module
+
+## Node.js and frontend tooling
 node_modules/
 dist/
+coverage/
+.nyc_output/
+.npm/
+.yarn/
+.pnp.*
+.parcel-cache/
+.turbo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+## Python tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+
+## Native build output
+CMakeFiles/
+CMakeCache.txt
+cmake-build-*/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+
+## Temporary, generated, and packaged files
+tmp/
+temp/
+.cache/
+*.tmp
+*.bak
+*.swp
+*.swo
+*.orig
+*.zip
+*.tar
+*.gz
+
+## Test and analysis output
+.coverage
+test-results/
+reports/
+.sonar/
+
+## Launcher runtime and downloaded data
+run/
+runs/
+crash-reports/
+assets/
+libraries/
+versions/
+instances/
+downloads/
+
+## Tauri intermediate and build output
 src-tauri/target/
+src-tauri/target-clean/
 src-tauri/gen/
-.DS_Store
-*.log
-.pnpm-store/
+src-tauri/.tauri/
+src-tauri/icons/*.icns
+src-tauri/icons/*.ico
+src-tauri/icons/*.png
+*.AppImage
+*.app.tar.gz
+*.dmg
+*.deb
+*.msi
+*.nsis.zip
+

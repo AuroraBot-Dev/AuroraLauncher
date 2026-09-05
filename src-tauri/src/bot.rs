@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
@@ -37,15 +38,16 @@ impl BotService {
             settings: self.settings.clone(),
             bot: self.bot.clone(),
         };
-        if !self.paths.git_exe().exists() {
-            tools.install(ToolKind::Git, app).await?;
+        // 依次保证可用：launcher 自管的没装时，直接复用系统已装版本，都不存在才联网下载
+        for kind in [ToolKind::Git, ToolKind::Uv, ToolKind::Python] {
+            if !tools.is_installed(kind).await {
+                tools.install(kind, app, false).await?;
+            }
         }
-        if !self.paths.uv_exe().exists() {
-            tools.install(ToolKind::Uv, app).await?;
-        }
-        if !tools.is_installed(ToolKind::Python).await {
-            tools.install(ToolKind::Python, app).await?;
-        }
+
+        let uv = tools
+            .uv_command_exe()
+            .ok_or_else(|| anyhow::anyhow!("未找到可用的 uv"))?;
 
         let kernel = KernelService {
             paths: self.paths.clone(),
@@ -62,20 +64,28 @@ impl BotService {
 
         if !self.paths.env_python().exists() {
             events::log(app, "info", "创建 AuroraBot Python 虚拟环境");
-            let mut venv = Sandbox::new(&self.paths).command(&self.paths.uv_exe());
-            venv.arg("venv")
-                .arg("--python")
-                .arg(crate::manifest::PYTHON_VERSION)
-                .arg(&self.paths.env_aurora);
+            let mut venv = Sandbox::new(&self.paths).command(&uv);
+            venv.arg("venv").arg("--python");
+            if tools.managed_python_ready().await {
+                // 自管 Python：交给 uv 按其版本解析
+                venv.arg(crate::manifest::PYTHON_VERSION);
+            } else {
+                // 复用系统 Python：显式传解释器路径
+                let python = tools
+                    .system_python()
+                    .ok_or_else(|| anyhow::anyhow!("未找到可用的 Python"))?;
+                venv.arg(&python);
+            }
+            venv.arg(&self.paths.env_aurora);
             let output = capture_output(venv, "uv venv").await?;
             ensure_success(output, "uv venv")?;
         }
 
         events::log(app, "info", "同步 AuroraBot Python 依赖");
         events::progress(app, "sync", 0, None, Some("同步 Python 依赖".into()));
-        let mut sync = Sandbox::new(&self.paths).command(&self.paths.uv_exe());
+        let mut sync = Sandbox::new(&self.paths).command(&uv);
         sync.arg("sync").arg("--active").arg("--project").arg(root);
-        let output = capture_output(sync, "uv sync").await?;
+        let output = capture_sync(sync, app.clone()).await?;
         ensure_success(output, "uv sync")?;
         events::progress(app, "sync", 0, None, None);
         events::log(app, "success", "Python 依赖已同步");
@@ -209,4 +219,92 @@ async fn capture_output(mut cmd: Command, label: &'static str) -> Result<Output>
     tokio::task::spawn_blocking(move || cmd.output().with_context(|| format!("执行 {label} 失败")))
         .await
         .with_context(|| format!("{label} 任务失败"))?
+}
+
+/// uv sync 阶段 → 近似百分比（uv 不输出字节级进度，按输出里的里程碑映射）。
+/// 解析→18%，下载→55%，安装/审计→90%；结束前会切到 100%。
+fn sync_stage_percent(line: &str) -> Option<u8> {
+    let l = line.to_ascii_lowercase();
+    if l.contains("installed") || l.contains("audited") {
+        Some(90)
+    } else if l.contains("downloaded") {
+        Some(55)
+    } else if l.contains("resolved") {
+        Some(18)
+    } else {
+        None
+    }
+}
+
+/// 流式执行 uv sync：边读 stderr 边按阶段更新进度，让前端有带百分比的进度条
+async fn capture_sync(mut cmd: Command, app: AppHandle) -> Result<Output> {
+    tokio::task::spawn_blocking(move || {
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd.spawn().with_context(|| "启动 uv sync 失败")?;
+        let stderr = child.stderr.take().context("读取 uv stderr 失败")?;
+        let mut stdout = child.stdout.take().context("读取 uv stdout 失败")?;
+
+        let app_thread = app.clone();
+        let err_handle = std::thread::spawn(move || -> Vec<u8> {
+            let mut bytes = Vec::new();
+            let mut line = String::new();
+            let mut reader = BufReader::new(stderr);
+            let mut last: u8 = 0;
+            events::progress(
+                &app_thread,
+                "sync",
+                5,
+                Some(100),
+                Some("同步 Python 依赖 5%".into()),
+            );
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        bytes.extend_from_slice(line.as_bytes());
+                        if let Some(pct) = sync_stage_percent(&line) {
+                            if pct > last {
+                                last = pct;
+                                events::progress(
+                                    &app_thread,
+                                    "sync",
+                                    u64::from(pct),
+                                    Some(100),
+                                    Some(format!("同步 Python 依赖 {pct}%")),
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            bytes
+        });
+
+        let out_handle = std::thread::spawn(move || -> Vec<u8> {
+            let mut bytes = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => bytes.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+            bytes
+        });
+
+        let status = child.wait().context("等待 uv sync 结束失败")?;
+        let stderr_bytes = err_handle.join().unwrap_or_default();
+        let stdout_bytes = out_handle.join().unwrap_or_default();
+        Ok(Output {
+            status,
+            stdout: stdout_bytes,
+            stderr: stderr_bytes,
+        })
+    })
+    .await
+    .with_context(|| "uv sync 任务失败")?
 }

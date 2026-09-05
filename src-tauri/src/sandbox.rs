@@ -17,6 +17,36 @@ impl<'a> Sandbox<'a> {
         let mut cmd = Command::new(executable);
         cmd.env_clear();
 
+        // GUI 启动的子进程是控制台程序，隐藏它们自己的终端窗口
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        // env_clear 会把 Windows 系统级变量一并清掉。实测缺失 SystemRoot 等会让
+        // git(curl 的线程化 DNS 解析) 直接以 “getaddrinfo() thread failed to start”
+        // 失败。这里只从父进程挑出系统级变量补回，PATH 仍由下方显式控制，
+        // 不引入宿主的用户级路径/代理，隔离目标不受影响。
+        #[cfg(windows)]
+        {
+            const SYSTEM_VARS: &[(&str, &str)] = &[
+                ("SystemRoot", "C:\\Windows"),
+                ("windir", "C:\\Windows"),
+                ("SystemDrive", "C:"),
+                ("ProgramData", "C:\\ProgramData"),
+                ("COMSPEC", "C:\\Windows\\System32\\cmd.exe"),
+                ("PATHEXT", ".COM;.EXE;.BAT;.CMD"),
+                ("NUMBER_OF_PROCESSORS", "1"),
+                ("PROCESSOR_ARCHITECTURE", "AMD64"),
+            ];
+            for (name, fallback) in SYSTEM_VARS {
+                let value = std::env::var_os(name).unwrap_or_else(|| fallback.into());
+                cmd.env(name, value);
+            }
+        }
+
         let mut path_entries = self.paths.tool_path_entries();
         if is_windows() {
             path_entries.push(PathBuf::from("C:\\Windows\\System32"));

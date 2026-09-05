@@ -119,7 +119,7 @@ export const useAppStore = defineStore('app', () => {
           version: {
             git: '2.46.0',
             python: '3.12.7',
-            uv: '0.12.5',
+            uv: '0.12.10',
             pnpm: '9.12.0'
           }[kind],
           installed: true,
@@ -168,16 +168,18 @@ export const useAppStore = defineStore('app', () => {
       isBusy.value = true
       addLog('info', '开始安装全部依赖...')
       await invoke('install_all_deps')
-      addLog('success', '依赖安装任务已提交')
+      addLog('success', '依赖安装完成')
       await refreshAll()
     } catch (e: any) {
-      addLog('error', `安装依赖失败: ${e?.message || e}`)
+      const message = `安装依赖失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     } finally {
       isBusy.value = false
     }
   }
 
-  async function installOne(kind: ToolKind) {
+  async function installOne(kind: ToolKind, force = false) {
     if (!withReadyMode()) {
       const order: ToolKind[] =
         kind === 'python' ? ['uv', 'python'] : kind === 'uv' ? ['uv'] : [kind]
@@ -190,12 +192,14 @@ export const useAppStore = defineStore('app', () => {
     }
     try {
       isBusy.value = true
-      addLog('info', `开始安装 ${kind}...`)
-      await invoke('install_dependency', { kind })
-      addLog('success', `${kind} 安装任务已提交`)
+      addLog('info', `开始${force ? '重' : ''}安装 ${kind}...`)
+      await invoke('install_dependency', { kind, force })
+      addLog('success', `${kind} 安装完成`)
       await refreshAll()
     } catch (e: any) {
-      addLog('error', `安装 ${kind} 失败: ${e?.message || e}`)
+      const message = `安装 ${kind} 失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     } finally {
       isBusy.value = false
     }
@@ -233,10 +237,12 @@ export const useAppStore = defineStore('app', () => {
       isBusy.value = true
       addLog('info', kernelStatus.value.exists ? '开始更新内核源码...' : '开始下载 AuroraBot 内核...')
       await invoke('kernel_update')
-      addLog('success', '内核任务已提交')
+      addLog('success', '内核更新完成')
       await refreshAll()
     } catch (e: any) {
-      addLog('error', `内核操作失败: ${e?.message || e}`)
+      const message = `内核操作失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     } finally {
       isBusy.value = false
     }
@@ -263,10 +269,12 @@ export const useAppStore = defineStore('app', () => {
       isBusy.value = true
       addLog('info', `启动 AuroraBot (headless=${headless})...`)
       await invoke('start_bot', { headless })
-      addLog('success', '启动命令已发送')
+      addLog('success', 'AuroraBot 已启动')
       await refreshAll()
     } catch (e: any) {
-      addLog('error', `启动 Bot 失败: ${e?.message || e}`)
+      const message = `启动 Bot 失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     } finally {
       isBusy.value = false
     }
@@ -287,10 +295,12 @@ export const useAppStore = defineStore('app', () => {
       isBusy.value = true
       addLog('info', '停止 AuroraBot...')
       await invoke('stop_bot')
-      addLog('success', '停止命令已发送')
+      addLog('success', 'AuroraBot 已停止')
       await refreshAll()
     } catch (e: any) {
-      addLog('error', `停止 Bot 失败: ${e?.message || e}`)
+      const message = `停止 Bot 失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     } finally {
       isBusy.value = false
     }
@@ -326,7 +336,14 @@ export const useAppStore = defineStore('app', () => {
     await detectMode()
     if (!isTauriRuntime()) return
     await listen<ProgressEvent>('progress', (event: Event<ProgressEvent>) => {
-      progress.value = event.payload
+      const payload = event.payload
+      // 后端用 {current:0, total:null, label:null} 表示“清除进度”；
+      // 收到即视为无进行中的安装/下载，避免底部残留一条空转进度条
+      if (payload.total == null && payload.label == null) {
+        progress.value = null
+      } else {
+        progress.value = payload
+      }
     })
     await listen<{ level: LogLine['level']; message: string }>(
       'log',

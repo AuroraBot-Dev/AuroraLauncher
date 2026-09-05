@@ -46,7 +46,7 @@ pub struct ToolRequirement {
 }
 
 pub const PYTHON_VERSION: &str = "3.12.7";
-pub const UV_VERSION: &str = "0.12.5";
+pub const UV_VERSION: &str = "0.12.10";
 pub const GIT_VERSION: &str = "2.46.0";
 pub const PNPM_VERSION: &str = "9.12.0";
 
@@ -56,7 +56,13 @@ pub fn requirement(kind: ToolKind) -> Result<ToolRequirement> {
         ToolKind::Uv => {
             let os = crate::platform::detect_os();
             let arch = crate::platform::detect_arch();
-            let archive_name = format!("uv-{}.tar.gz", triple(os, arch));
+            // uv 官方发布：Windows 是 .zip，macOS/Linux 是 .tar.gz
+            let suffix = if matches!(os, crate::platform::OsKind::Windows) {
+                ".zip"
+            } else {
+                ".tar.gz"
+            };
+            let archive_name = format!("uv-{}{suffix}", triple(os, arch));
             let url = format!(
                 "https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{archive_name}"
             );

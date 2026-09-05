@@ -24,11 +24,24 @@ pub async fn check_all_status(state: State<'_, AppState>) -> Result<AllStatus, S
         .status()
         .map_err(|error| error.to_string())?;
     let process = BotService::new(&app_state).info();
-    Ok(AllStatus {
+    let all = AllStatus {
         dependency,
         kernel,
         process,
-    })
+    };
+    // 诊断：把每次探测结果追加到 <tool>/logs/launcher-status.log，便于排查“显示缺失”
+    if let Ok(json) = serde_json::to_string(&all) {
+        let file = app_state.paths.logs.join("launcher-status.log");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&file)
+            .and_then(|mut handle| {
+                use std::io::Write;
+                handle.write_all(format!("{json}\n").as_bytes())
+            });
+    }
+    Ok(all)
 }
 
 #[tauri::command]
@@ -44,13 +57,14 @@ pub async fn install_all_deps(app: AppHandle, state: State<'_, AppState>) -> Res
 #[tauri::command]
 pub async fn install_dependency(
     kind: ToolKind,
+    force: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let app_state = state.inner().clone();
     let service = ToolService::new(&app_state);
     service
-        .install(kind, &app)
+        .install(kind, &app, force.unwrap_or(false))
         .await
         .map_err(|error| format!("{error:#}"))
 }
