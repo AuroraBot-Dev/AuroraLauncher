@@ -42,3 +42,10 @@ export interface LogLine {
 }
 
 export type ToolKind = 'python' | 'uv' | 'git' | 'pnpm'
+
+export interface LauncherUpdate {
+  currentVersion: string
+  version: string
+  date: string | null
+  notes: string | null
+}

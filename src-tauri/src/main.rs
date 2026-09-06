@@ -13,6 +13,7 @@ mod platform;
 mod sandbox;
 mod state;
 mod tools;
+mod updater;
 
 use anyhow::Context;
 use tauri::Manager;
@@ -23,6 +24,8 @@ fn main() {
 
     let app = tauri::Builder::default()
         .manage(app_state)
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::PendingUpdate(std::sync::Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             commands::check_all_status,
             commands::install_all_deps,
@@ -31,6 +34,8 @@ fn main() {
             commands::start_bot,
             commands::stop_bot,
             commands::open_app_dir,
+            updater::check_launcher_update,
+            updater::install_launcher_update,
         ])
         .build(tauri::generate_context!())
         .with_context(|| "启动 AuroraLauncher 失败")

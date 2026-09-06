@@ -1,0 +1,91 @@
+name: Release
+
+# 推送形如 v0.1.0 的 tag 时构建三平台安装包并创建 GitHub Release。
+# 需要先在仓库 Settings -> Secrets and variables -> Actions 中配置：
+#   TAURI_SIGNING_PRIVATE_KEY          签名私钥内容（必须，未配置时构建会失败）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD 私钥口令（可选，按需配置）
+# 私钥对应的公钥必须写入 src-tauri/tauri.conf.json 的 plugins.updater.pubkey。
+# 生成方式：pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
+# 详见 README“自动更新与发布”一节。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows x64（NSIS + MSI）
+          - platform: windows-latest
+            args: ''
+          # Linux x64（deb / rpm / AppImage）
+          - platform: ubuntu-22.04
+            args: ''
+          # macOS Apple Silicon
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          # macOS Intel
+          - platform: macos-13
+            args: '--target x86_64-apple-darwin'
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # 交叉目标只在 macOS runner 上安装，Windows/Linux 不需要
+          targets: ${{ (matrix.platform == 'macos-latest' || matrix.platform == 'macos-13') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # tauri-action 会自动执行 pnpm build（beforeBuildCommand）并打包、签名、
+      # 生成 updater 产物与 latest.json，最后把资产上传到（或补传到）GitHub Release。
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'AuroraLauncher v__VERSION__'
+          releaseBody: 'AuroraLauncher v__VERSION__ 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

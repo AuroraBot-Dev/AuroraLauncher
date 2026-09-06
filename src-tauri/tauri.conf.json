@@ -29,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Productivity",
     "shortDescription": "AuroraBot 自包含启动器",
     "longDescription": "AuroraLauncher 自主管理 Python/uv/Git/pnpm 与 AuroraBot 内核，运行时与宿主环境隔离。",
@@ -39,5 +40,16 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYzRUQ5Q0FDNDc4MjExODcKUldTSEVZSkhySnp0WTBYSkRFajl4VGZQTlgwUVlxSHZWaDRDU3lZWHJKNEpWU2Yra1E4QkFUUmoK",
+      "endpoints": [
+        "https://github.com/AuroraBot-Dev/AuroraLauncher/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

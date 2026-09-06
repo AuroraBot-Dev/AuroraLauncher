@@ -8,7 +8,8 @@ import type {
   AuroraProcessInfo,
   ProgressEvent,
   LogLine,
-  ToolKind
+  ToolKind,
+  LauncherUpdate
 } from '../types'
 
 export type BackendMode = 'checking' | 'tauri' | 'preview'
@@ -318,6 +319,49 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function checkForUpdates(): Promise<LauncherUpdate | null> {
+    if (!withReadyMode()) {
+      addLog('warn', '演示模式：跳过检查更新（正式版本会查询 GitHub Releases）')
+      return null
+    }
+    try {
+      addLog('info', '正在检查 AuroraLauncher 更新…')
+      const update = await invoke<LauncherUpdate | null>('check_launcher_update')
+      if (update) addLog('info', `发现新版本 ${update.version}（当前 ${update.currentVersion}）`)
+      else addLog('info', '当前已是最新版本')
+      return update
+    } catch (e: any) {
+      const raw = e?.message || String(e)
+      // GitHub 上还没有任何 Release（或还没有 latest.json）时视为“暂无可更新”
+      if (/404|not\s?found|release|no update/i.test(raw)) {
+        addLog('info', '更新源暂无可用发布，当前版本无需更新')
+        return null
+      }
+      const message = `检查更新失败: ${raw}`
+      addLog('error', message)
+      throw new Error(message)
+    }
+  }
+
+  async function installUpdate(): Promise<void> {
+    if (!withReadyMode()) {
+      addLog('warn', '演示模式：无法安装更新')
+      return
+    }
+    isBusy.value = true
+    try {
+      addLog('info', '开始下载并安装 AuroraLauncher 更新…')
+      await invoke('install_launcher_update')
+      addLog('success', '更新已安装，应用即将重启')
+    } catch (e: any) {
+      const message = `安装更新失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
+    } finally {
+      isBusy.value = false
+    }
+  }
+
   function demoReset() {
     if (mode.value !== 'preview') return
     dependencyStatus.value = defaultDependencies()
@@ -376,6 +420,8 @@ export const useAppStore = defineStore('app', () => {
     startBot,
     stopBot,
     openFolder,
+    checkForUpdates,
+    installUpdate,
     addLog,
     demoReset,
     setCoreDownloading,

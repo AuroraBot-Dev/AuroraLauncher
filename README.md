@@ -179,6 +179,50 @@ cd src-tauri
 cargo check
 ```
 
+## 自动更新与发布
+
+应用使用 Tauri 官方 updater（`tauri-plugin-updater`）：启动时会静默自动检查一次，
+发现新版本即弹窗提示；底栏“检查更新”按钮可随时手动检查。查询地址是
+`src-tauri/tauri.conf.json` 中配置的 `latest.json`（指向本仓库 GitHub Release）。
+流程由 `.github/workflows/ci.yml`（PR/主分支校验）与 `.github/workflows/release.yml`
+（推送 `v*` tag 时构建三平台并发布）驱动。
+
+### 首次配置签名密钥
+
+更新包必须签名校验，首次发布前需要一次性生成密钥：
+
+```bash
+pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
+```
+
+1. 把生成的公钥粘贴进 `src-tauri/tauri.conf.json` 的 `plugins.updater.pubkey`
+   （当前是占位符 `REPLACE_WITH_YOUR_PUBLIC_KEY`）。
+2. 在 GitHub 仓库 `Settings → Secrets and variables → Actions` 添加两个密钥：
+   - `TAURI_SIGNING_PRIVATE_KEY`：`~/.tauri/aurora-launcher.key` 文件的完整内容
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：口令（如果生成时设置了密码）
+
+公钥会内嵌到安装包；私钥只存在于 GitHub Secrets，请勿提交到仓库，丢失后无法再向老用户推送更新。
+
+### 发布流程
+
+1. 更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三个版本号保持一致。
+2. 打 tag 并推送：
+
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+3. `.github/workflows/release.yml` 会自动为 Windows / Linux / macOS 构建安装包，
+   生成 updater 签名与 `latest.json`，并把资产上传到 draft Release；确认无误后在 GitHub 页面点“发布”。
+4. 用户端底栏“检查更新”→“立即更新”即可自动升级。
+
+注意：因为开启了 `bundle.createUpdaterArtifacts`，本地执行 `pnpm tauri:build`
+也会要求环境变量 `TAURI_SIGNING_PRIVATE_KEY`（PowerShell：`$env:TAURI_SIGNING_PRIVATE_KEY="..."`）。
+如果只是验证能否编译（不打更新产物），用 `cargo check` 即可。
+macOS 未配置 Apple 开发者证书时产物不做公证/签名，仅用于内部测试与 updater 验证；
+如需正式对外分发请按 Tauri 文档补充 `APPLE_*` 证书与 notarization 配置。
+
 ## IPC 命令
 
 | 前端调用 | Rust 命令 | 作用 |
@@ -190,6 +234,8 @@ cargo check
 | `start_bot` | `start_bot` | 准备环境并启动 Bot |
 | `stop_bot` | `stop_bot` | 停止当前 Bot |
 | `open_app_dir` | `open_app_dir` | 打开运行时目录 |
+| `checkForUpdates` | `check_launcher_update` | 检查 AuroraLauncher 自身更新 |
+| `installUpdate` | `install_launcher_update` | 下载并安装检测到的更新 |
 
 后端事件：
 
