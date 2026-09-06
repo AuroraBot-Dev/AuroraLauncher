@@ -213,8 +213,10 @@ pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
    git push origin v0.2.0
    ```
 
-3. `.github/workflows/release.yml` 会自动为 Windows / Linux / macOS 构建安装包，
-   生成 updater 签名与 `latest.json`，并把资产上传到 draft Release；确认无误后在 GitHub 页面点“发布”。
+3. `.github/workflows/release.yml` 会自动为 Windows（NSIS/MSI）、macOS Apple Silicon（dmg）、
+   Linux（deb/rpm/AppImage，以及一个便携 `tar.gz`）构建产物，
+   生成 updater 签名与 `latest.json`，并把资产上传到 draft Release；
+   确认无误后在 GitHub 页面点“发布”。
 4. 用户端底栏“检查更新”→“立即更新”即可自动升级。
 
 注意：因为开启了 `bundle.createUpdaterArtifacts`，本地执行 `pnpm tauri:build`

@@ -30,15 +30,12 @@ jobs:
           # Windows x64（NSIS + MSI）
           - platform: windows-latest
             args: ''
-          # Linux x64（deb / rpm / AppImage）
+          # Linux x64（deb / rpm / AppImage + 额外便携 tar.gz）
           - platform: ubuntu-22.04
             args: ''
-          # macOS Apple Silicon
+          # macOS Apple Silicon（暂不支持 Intel mac）
           - platform: macos-latest
             args: '--target aarch64-apple-darwin'
-          # macOS Intel
-          - platform: macos-13
-            args: '--target x86_64-apple-darwin'
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +60,8 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          # 交叉目标只在 macOS runner 上安装，Windows/Linux 不需要
-          targets: ${{ (matrix.platform == 'macos-latest' || matrix.platform == 'macos-13') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          # 交叉目标只在 Apple Silicon 的 macOS runner 上安装，Windows/Linux 不需要
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
 
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
@@ -89,3 +86,21 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Tauri 没有原生 tar.gz target，这里手动把编译出的二进制打成便携包，
+      # 并作为资产补传到同一个 draft Release（需要系统已装 webkit2gtk 等运行库）。
+      - name: Package portable tar.gz (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r .version src-tauri/tauri.conf.json)"
+          echo "APP_TAG=v${VERSION}" >> "$GITHUB_ENV"
+          test -f src-tauri/target/release/aurora-launcher
+          tar -czf "aurora-launcher_${VERSION}_linux-x86_64.tar.gz" -C src-tauri/target/release aurora-launcher
+
+      - name: Upload portable tar.gz to release
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.APP_TAG }}
+          files: aurora-launcher_*.tar.gz
