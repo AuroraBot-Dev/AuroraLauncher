@@ -8,7 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "quick:package": "powershell -NoProfile -ExecutionPolicy Bypass -File quick-package.ps1"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
