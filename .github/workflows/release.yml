@@ -57,6 +57,16 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      # 版本单一来源是根目录 package.json（src-tauri/tauri.conf.json 通过
+      # "version": "../package.json" 引用它），tag 与 Release 都从这里解析。
+      - name: Resolve app version
+        id: ver
+        shell: bash
+        run: |
+          VER="$(node -p "require('./package.json').version")"
+          echo "app_version=$VER" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VER" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -80,9 +90,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: 'AuroraLauncher v__VERSION__'
-          releaseBody: 'AuroraLauncher v__VERSION__ 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。'
+          tagName: ${{ steps.ver.outputs.release_tag }}
+          releaseName: 'AuroraLauncher ${{ steps.ver.outputs.release_tag }}'
+          releaseBody: 'AuroraLauncher ${{ steps.ver.outputs.release_tag }} 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -93,8 +103,7 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-          VERSION="$(jq -r .version src-tauri/tauri.conf.json)"
-          echo "APP_TAG=v${VERSION}" >> "$GITHUB_ENV"
+          VERSION="${{ steps.ver.outputs.app_version }}"
           test -f src-tauri/target/release/aurora-launcher
           tar -czf "aurora-launcher_${VERSION}_linux-x86_64.tar.gz" -C src-tauri/target/release aurora-launcher
 
@@ -102,5 +111,5 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.APP_TAG }}
+          tag_name: ${{ steps.ver.outputs.release_tag }}
           files: aurora-launcher_*.tar.gz

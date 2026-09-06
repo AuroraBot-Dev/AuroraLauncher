@@ -1,5 +1,7 @@
 [package]
 name = "aurora-launcher"
+# 发布/打包版本以仓库根 package.json 的 version 为准（tauri.conf.json 引用它）。
+# 这里只是 Rust crate 元数据，不决定安装包/自动更新版本，改版本号时无需同步。
 version = "0.1.0"
 edition = "2021"
 

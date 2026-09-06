@@ -205,10 +205,18 @@ pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
 
 ### 发布流程
 
-1. 更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三个版本号保持一致。
-2. 打 tag 并推送：
+版本单一来源是根目录 `package.json` 的 `version`：
+`src-tauri/tauri.conf.json` 用 `"version": "../package.json"` 引用它，
+`src-tauri/Cargo.toml` 里的版本仅作 Rust crate 元数据、不再决定打包版本。
+
+1. 只改 `package.json` 的版本号（也可 `pnpm version 0.2.0`）。
+2. 打与版本一致的 tag 并推送：
 
    ```bash
+   git add package.json
+   git commit -m "chore: bump version to 0.2.0"
+   git push origin main
+
    git tag v0.2.0
    git push origin v0.2.0
    ```
