@@ -1,21 +1,24 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::manifest::ToolKind;
 use crate::platform::is_windows;
-use crate::state::RuntimePaths;
+use crate::state::{RuntimePaths, SettingsStore};
 
 pub struct Sandbox<'a> {
     paths: &'a RuntimePaths,
+    settings: &'a SettingsStore,
 }
 
 impl<'a> Sandbox<'a> {
-    pub fn new(paths: &'a RuntimePaths) -> Self {
-        Self { paths }
+    pub fn new(paths: &'a RuntimePaths, settings: &'a SettingsStore) -> Self {
+        Self { paths, settings }
     }
 
     pub fn command(&self, executable: &Path) -> Command {
         let mut cmd = Command::new(executable);
         cmd.env_clear();
+        let overrides = self.settings.snapshot().tool_dirs;
 
         // GUI 启动的子进程是控制台程序，隐藏它们自己的终端窗口
         #[cfg(windows)]
@@ -47,7 +50,7 @@ impl<'a> Sandbox<'a> {
             }
         }
 
-        let mut path_entries = self.paths.tool_path_entries();
+        let mut path_entries = self.paths.tool_path_entries(&overrides);
         if is_windows() {
             path_entries.push(PathBuf::from("C:\\Windows\\System32"));
             path_entries.push(PathBuf::from("C:\\Windows"));
@@ -72,7 +75,10 @@ impl<'a> Sandbox<'a> {
             "UV_TOOL_DIR",
             self.paths.root.join("cache").join("uv-tools"),
         );
-        cmd.env("UV_PYTHON_INSTALL_DIR", &self.paths.tools_python);
+        cmd.env(
+            "UV_PYTHON_INSTALL_DIR",
+            self.paths.tool_dir(ToolKind::Python, &overrides),
+        );
         cmd.env("UV_PROJECT_ENVIRONMENT", &self.paths.env_aurora);
         cmd.env("VIRTUAL_ENV", &self.paths.env_aurora);
         cmd.env("PIP_CACHE_DIR", self.paths.root.join("cache").join("pip"));

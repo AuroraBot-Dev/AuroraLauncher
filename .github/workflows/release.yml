@@ -25,6 +25,9 @@ jobs:
   publish-tauri:
     strategy:
       fail-fast: false
+      # 串行执行：三个平台各自生成并上传 latest.json，并行会互相覆盖导致某个平台
+      # 的条目丢失（例如 Windows）。串行后每个平台都能读到并合并上一个平台的结果。
+      max-parallel: 1
       matrix:
         include:
           # Windows x64（NSIS + MSI）

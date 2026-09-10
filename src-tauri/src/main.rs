@@ -30,10 +30,13 @@ fn main() {
             commands::check_all_status,
             commands::install_all_deps,
             commands::install_dependency,
+            commands::set_tool_dir,
             commands::kernel_update,
             commands::start_bot,
             commands::stop_bot,
             commands::open_app_dir,
+            commands::open_external_url,
+            commands::runtime_info,
             updater::check_launcher_update,
             updater::install_launcher_update,
         ])

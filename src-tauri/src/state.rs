@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 use std::process::Child;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::manifest::ToolKind;
 use crate::platform::{exe_suffix, is_windows};
 
 #[derive(Debug, Clone)]
@@ -104,20 +106,41 @@ impl RuntimePaths {
         self.state_dir.join("settings.json")
     }
 
-    pub fn uv_exe(&self) -> PathBuf {
-        self.tools_uv.join(format!("uv{}", exe_suffix()))
-    }
-
-    pub fn git_exe(&self) -> PathBuf {
-        if is_windows() {
-            self.tools_git.join("cmd").join("git.exe")
-        } else {
-            self.tools_git.join("bin").join("git")
+    /// 某工具在默认布局下的目录（未设置自定义路径时使用）。
+    pub fn default_tool_dir(&self, kind: ToolKind) -> PathBuf {
+        match kind {
+            ToolKind::Python => self.tools_python.clone(),
+            ToolKind::Uv => self.tools_uv.clone(),
+            ToolKind::Git => self.tools_git.clone(),
+            ToolKind::Pnpm => self.tools_pnpm.clone(),
         }
     }
 
-    pub fn pnpm_exe(&self) -> PathBuf {
-        self.tools_pnpm.join(format!("pnpm{}", exe_suffix()))
+    /// 某工具实际使用的目录：设置里填了自定义路径就用它，否则用默认目录。
+    pub fn tool_dir(&self, kind: ToolKind, overrides: &ToolDirOverrides) -> PathBuf {
+        let raw = overrides.get(kind).trim();
+        if raw.is_empty() {
+            self.default_tool_dir(kind)
+        } else {
+            PathBuf::from(raw)
+        }
+    }
+
+    /// 某工具可执行文件（Python 无单一 exe，返回其目录）。
+    pub fn tool_exe(&self, kind: ToolKind, overrides: &ToolDirOverrides) -> PathBuf {
+        let dir = self.tool_dir(kind, overrides);
+        match kind {
+            ToolKind::Python => dir,
+            ToolKind::Uv => dir.join(format!("uv{}", exe_suffix())),
+            ToolKind::Pnpm => dir.join(format!("pnpm{}", exe_suffix())),
+            ToolKind::Git => {
+                if is_windows() {
+                    dir.join("cmd").join("git.exe")
+                } else {
+                    dir.join("bin").join("git")
+                }
+            }
+        }
     }
 
     pub fn env_python(&self) -> PathBuf {
@@ -136,17 +159,19 @@ impl RuntimePaths {
         }
     }
 
-    pub fn tool_path_entries(&self) -> Vec<PathBuf> {
-        let mut entries = vec![self.tools_uv.clone(), self.tools_pnpm.clone()];
+    pub fn tool_path_entries(&self, overrides: &ToolDirOverrides) -> Vec<PathBuf> {
+        let uv = self.tool_dir(ToolKind::Uv, overrides);
+        let pnpm = self.tool_dir(ToolKind::Pnpm, overrides);
+        let git = self.tool_dir(ToolKind::Git, overrides);
+        let mut entries = vec![uv, pnpm];
         if is_windows() {
-            entries.push(self.tools_git.join("cmd"));
-            entries.push(self.tools_git.join("mingw64").join("bin"));
-            entries.push(self.tools_git.join("usr").join("bin"));
-            entries.push(self.env_scripts());
+            entries.push(git.join("cmd"));
+            entries.push(git.join("mingw64").join("bin"));
+            entries.push(git.join("usr").join("bin"));
         } else {
-            entries.push(self.tools_git.join("bin"));
-            entries.push(self.env_scripts());
+            entries.push(git.join("bin"));
         }
+        entries.push(self.env_scripts());
         entries
     }
 }
@@ -161,6 +186,42 @@ pub struct ToolState {
     pub url: String,
     #[serde(default)]
     pub installed_at: Option<String>,
+    /// 上次成功安装到的目录（用于换路径重装时清理旧副本）。
+    #[serde(default)]
+    pub path: String,
+}
+
+/// 每个工具的自定义安装目录覆盖；空字符串表示用默认目录。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ToolDirOverrides {
+    #[serde(default)]
+    pub python: String,
+    #[serde(default)]
+    pub uv: String,
+    #[serde(default)]
+    pub git: String,
+    #[serde(default)]
+    pub pnpm: String,
+}
+
+impl ToolDirOverrides {
+    pub fn get(&self, kind: ToolKind) -> &str {
+        match kind {
+            ToolKind::Python => &self.python,
+            ToolKind::Uv => &self.uv,
+            ToolKind::Git => &self.git,
+            ToolKind::Pnpm => &self.pnpm,
+        }
+    }
+
+    pub fn set(&mut self, kind: ToolKind, value: String) {
+        match kind {
+            ToolKind::Python => self.python = value,
+            ToolKind::Uv => self.uv = value,
+            ToolKind::Git => self.git = value,
+            ToolKind::Pnpm => self.pnpm = value,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,12 +230,12 @@ pub struct Settings {
     pub uv: ToolState,
     pub git: ToolState,
     pub pnpm: ToolState,
+    #[serde(default)]
+    pub tool_dirs: ToolDirOverrides,
     #[serde(default = "default_remote")]
     pub aurora_remote: String,
     #[serde(default = "default_branch")]
     pub aurora_branch: String,
-    #[serde(default)]
-    pub aurora_commit: String,
 }
 
 fn default_remote() -> String {
@@ -192,9 +253,9 @@ impl Default for Settings {
             uv: ToolState::default(),
             git: ToolState::default(),
             pnpm: ToolState::default(),
+            tool_dirs: ToolDirOverrides::default(),
             aurora_remote: default_remote(),
             aurora_branch: default_branch(),
-            aurora_commit: String::new(),
         }
     }
 }
@@ -232,11 +293,23 @@ impl SettingsStore {
     }
 }
 
+/// 工具来源：启动器自管 / 复用系统 PATH / 未安装。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolSource {
+    Managed,
+    System,
+    Missing,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolMeta {
     pub version: String,
     pub installed: bool,
+    pub source: ToolSource,
+    /// 该工具当前使用的安装目录（自定义路径或默认目录）。
+    pub path: String,
     pub installed_at: Option<String>,
 }
 
@@ -255,7 +328,6 @@ pub struct KernelStatus {
     pub exists: bool,
     pub remote: String,
     pub branch: String,
-    pub commit: String,
     pub commit_short: String,
     pub message: String,
     pub date: String,
@@ -267,7 +339,6 @@ impl KernelStatus {
             exists: false,
             remote: remote.to_string(),
             branch: branch.to_string(),
-            commit: String::new(),
             commit_short: String::new(),
             message: String::new(),
             date: String::new(),
@@ -340,6 +411,8 @@ pub struct AppState {
     pub paths: Arc<RuntimePaths>,
     pub settings: Arc<SettingsStore>,
     pub bot: Arc<BotRegistry>,
+    /// 安装互斥：同一时间只允许一个安装任务，避免并发写受管目录/暂存目录。
+    pub installing: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -350,6 +423,7 @@ impl AppState {
             paths: Arc::new(paths),
             settings: Arc::new(settings),
             bot: Arc::new(BotRegistry::new()),
+            installing: Arc::new(AtomicBool::new(false)),
         })
     }
 }

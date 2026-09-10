@@ -64,7 +64,7 @@ impl BotService {
 
         if !self.paths.env_python().exists() {
             events::log(app, "info", "创建 AuroraBot Python 虚拟环境");
-            let mut venv = Sandbox::new(&self.paths).command(&uv);
+            let mut venv = Sandbox::new(&self.paths, &self.settings).command(&uv);
             venv.arg("venv").arg("--python");
             if tools.managed_python_ready().await {
                 // 自管 Python：交给 uv 按其版本解析
@@ -83,7 +83,7 @@ impl BotService {
 
         events::log(app, "info", "同步 AuroraBot Python 依赖");
         events::progress(app, "sync", 0, None, Some("同步 Python 依赖".into()));
-        let mut sync = Sandbox::new(&self.paths).command(&uv);
+        let mut sync = Sandbox::new(&self.paths, &self.settings).command(&uv);
         sync.arg("sync").arg("--active").arg("--project").arg(root);
         let output = capture_sync(sync, app.clone()).await?;
         ensure_success(output, "uv sync")?;
@@ -114,7 +114,7 @@ impl BotService {
         ));
         let output_file = File::create(&log_file).context("创建 Bot 日志失败")?;
 
-        let mut cmd = Sandbox::new(&self.paths).command(&self.paths.env_python());
+        let mut cmd = Sandbox::new(&self.paths, &self.settings).command(&self.paths.env_python());
         cmd.current_dir(kernel);
         cmd.arg("-m")
             .arg("aurora.main")

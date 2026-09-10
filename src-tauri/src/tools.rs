@@ -13,7 +13,7 @@ use crate::platform::is_windows;
 use crate::sandbox::Sandbox;
 use crate::state::{
     AppState, BotRegistry, DependencyStatus, RuntimePaths, Settings, SettingsStore, ToolMeta,
-    ToolState,
+    ToolSource, ToolState,
 };
 
 #[derive(Clone)]
@@ -81,14 +81,30 @@ impl ToolService {
             // 真·重装：清掉受管副本与记录状态后重走安装。同时丢弃已下载的安装包
             // 缓存，让“重装”重新下载 → 前端能显示真实百分比进度条
             events::log(app, "info", format!("重新安装 {}", kind));
-            let managed = self.ensure_tool_dir(kind);
-            clean_dir(&managed).with_context(|| {
+            let target = self.ensure_tool_dir(kind);
+            let default_dir = self.paths.default_tool_dir(kind);
+
+            // 换路径重装时，把旧位置（默认目录、上次安装目录）里由启动器自管的副本
+            // 一并删除，避免残留；系统 PATH 上的依赖不属于受管目录，从不触碰。
+            let mut stale = vec![default_dir];
+            if let Some(previous) = self.previous_installed_dir(kind) {
+                stale.push(previous);
+            }
+            for dir in stale {
+                if dir != target && dir.exists() {
+                    clean_dir(&dir).with_context(|| {
+                        format!("无法清理 {} 的旧受管目录: {}", kind, dir.display())
+                    })?;
+                }
+            }
+
+            clean_dir(&target).with_context(|| {
                 format!(
                     "无法清理 {} 的受管目录，可能是仍有旧进程占用：请先在底部按钮停止 Bot 后重试",
                     kind
                 )
             })?;
-            std::fs::create_dir_all(&managed)?;
+            std::fs::create_dir_all(&target)?;
             self.settings.update(|settings| {
                 set_tool_state(settings, kind, ToolState::default());
             })?;
@@ -153,11 +169,13 @@ impl ToolService {
             .uv_command_exe()
             .ok_or_else(|| anyhow!("无法定位可用的 uv，无法安装 Python"))?;
         let requirement = manifest::requirement(ToolKind::Python)?;
-        let mut cmd = Sandbox::new(&self.paths).command(&uv);
+        let python_dir = self.paths.tool_dir(ToolKind::Python, &self.settings.snapshot().tool_dirs);
+        std::fs::create_dir_all(&python_dir)?;
+        let mut cmd = Sandbox::new(&self.paths, &self.settings).command(&uv);
         cmd.arg("python")
             .arg("install")
             .arg("--install-dir")
-            .arg(&self.paths.tools_python)
+            .arg(&python_dir)
             .arg(&requirement.version);
         // uv 下载/解压解释器耗时较长且没有字节级进度，用不定进度提示避免“看起来卡住”
         events::progress(
@@ -184,6 +202,7 @@ impl ToolService {
                     sha256: String::new(),
                     url: "uv-managed-python-build-standalone".into(),
                     installed_at: Some(now),
+                    path: python_dir.display().to_string(),
                 },
             );
         })?;
@@ -269,12 +288,17 @@ impl ToolService {
             ToolKind::Python => unreachable!("Python 由 uv python install 管理"),
         }
 
+        // 自定义路径可能在其他盘符，rename 跨卷会失败，这里统一走 move_dir 兜底复制
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("创建工具目录失败: {}", parent.display()))?;
+        }
         let backup = self.paths.staging.join(format!("{kind}-backup"));
         clean_dir(&backup)?;
         if target.exists() {
-            std::fs::rename(&target, &backup)?;
+            move_dir(&target, &backup)?;
         }
-        std::fs::rename(&staging, &target)?;
+        move_dir(&staging, &target)?;
         let _ = std::fs::remove_dir_all(&backup);
 
         let now = Local::now().to_rfc3339();
@@ -287,11 +311,12 @@ impl ToolService {
                     sha256: package.sha256.clone().unwrap_or_default(),
                     url: package.url.clone(),
                     installed_at: Some(now),
+                    path: target.display().to_string(),
                 },
             );
         })?;
 
-        let mut verify = Sandbox::new(&self.paths).command(&self.exe_path(kind));
+        let mut verify = Sandbox::new(&self.paths, &self.settings).command(&self.exe_path(kind));
         verify.arg("--version");
         let output = capture_output(verify, "工具自检").await?;
         if !output.status.success() {
@@ -310,7 +335,7 @@ impl ToolService {
             return false;
         };
         let requirement = manifest::requirement(ToolKind::Python).unwrap();
-        let mut cmd = Sandbox::new(&self.paths).command(&uv);
+        let mut cmd = Sandbox::new(&self.paths, &self.settings).command(&uv);
         cmd.arg("python")
             .arg("find")
             .arg("--no-project")
@@ -332,21 +357,24 @@ impl ToolService {
     }
 
     fn ensure_tool_dir(&self, kind: ToolKind) -> PathBuf {
-        match kind {
-            ToolKind::Python => self.paths.tools_python.clone(),
-            ToolKind::Uv => self.paths.tools_uv.clone(),
-            ToolKind::Git => self.paths.tools_git.clone(),
-            ToolKind::Pnpm => self.paths.tools_pnpm.clone(),
-        }
+        self.paths.tool_dir(kind, &self.settings.snapshot().tool_dirs)
+    }
+
+    /// 上次成功安装到的受管目录（旧版设置未记录 path 时返回 None）。
+    fn previous_installed_dir(&self, kind: ToolKind) -> Option<PathBuf> {
+        let settings = self.settings.snapshot();
+        let state = match kind {
+            ToolKind::Python => &settings.python,
+            ToolKind::Uv => &settings.uv,
+            ToolKind::Git => &settings.git,
+            ToolKind::Pnpm => &settings.pnpm,
+        };
+        let raw = state.path.trim();
+        (!raw.is_empty()).then(|| PathBuf::from(raw))
     }
 
     pub fn exe_path(&self, kind: ToolKind) -> PathBuf {
-        match kind {
-            ToolKind::Python => self.paths.tools_python.clone(),
-            ToolKind::Uv => self.paths.uv_exe(),
-            ToolKind::Git => self.paths.git_exe(),
-            ToolKind::Pnpm => self.paths.pnpm_exe(),
-        }
+        self.paths.tool_exe(kind, &self.settings.snapshot().tool_dirs)
     }
 
     fn exe_name(&self, kind: ToolKind) -> String {
@@ -492,6 +520,11 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
     let settings = service.settings.snapshot();
 
     // Python：uv 自管优先，其次系统 Python
+    let python_path = service
+        .paths
+        .tool_dir(ToolKind::Python, &settings.tool_dirs)
+        .display()
+        .to_string();
     let python = if service.managed_python_ready().await {
         ToolMeta {
             version: if settings.python.version.is_empty() {
@@ -500,18 +533,24 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
                 settings.python.version.clone()
             },
             installed: true,
+            source: ToolSource::Managed,
+            path: python_path,
             installed_at: settings.python.installed_at.clone(),
         }
     } else if let Some((_, version)) = system_python_info() {
         ToolMeta {
             version,
             installed: true,
+            source: ToolSource::System,
+            path: python_path,
             installed_at: None,
         }
     } else {
         ToolMeta {
             version: settings.python.version.clone(),
             installed: false,
+            source: ToolSource::Missing,
+            path: python_path,
             installed_at: settings.python.installed_at.clone(),
         }
     };
@@ -524,6 +563,11 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
             ToolKind::Uv => &settings.uv,
             ToolKind::Pnpm => &settings.pnpm,
         };
+        let path = service
+            .paths
+            .tool_dir(kind, &settings.tool_dirs)
+            .display()
+            .to_string();
         if let Some(exe) = service.managed_exe(kind) {
             let version = if state.version.is_empty() {
                 probe_version(&exe).unwrap_or_default()
@@ -533,6 +577,8 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
             ToolMeta {
                 version,
                 installed: true,
+                source: ToolSource::Managed,
+                path,
                 installed_at: state.installed_at.clone(),
             }
         } else if let Some(version) =
@@ -541,12 +587,16 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
             ToolMeta {
                 version,
                 installed: true,
+                source: ToolSource::System,
+                path,
                 installed_at: None,
             }
         } else {
             ToolMeta {
                 version: state.version.clone(),
                 installed: false,
+                source: ToolSource::Missing,
+                path,
                 installed_at: state.installed_at.clone(),
             }
         }
@@ -563,6 +613,33 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
 fn clean_dir(path: &Path) -> Result<()> {
     if path.exists() {
         std::fs::remove_dir_all(path)?;
+    }
+    Ok(())
+}
+
+/// 移动目录：优先原子 rename，跨卷失败时退化为复制后删除。
+fn move_dir(src: &Path, dst: &Path) -> Result<()> {
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_dir(src, dst)?;
+            std::fs::remove_dir_all(src)?;
+            Ok(())
+        }
+    }
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
     }
     Ok(())
 }

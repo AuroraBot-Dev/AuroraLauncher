@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type Event } from '@tauri-apps/api/event'
 import type {
@@ -9,7 +9,9 @@ import type {
   ProgressEvent,
   LogLine,
   ToolKind,
-  LauncherUpdate
+  LauncherUpdate,
+  RuntimeInfo,
+  ThemeMode
 } from '../types'
 
 export type BackendMode = 'checking' | 'tauri' | 'preview'
@@ -21,17 +23,16 @@ export interface DemoStep {
 }
 
 const defaultDependencies = (): DependencyStatus => ({
-  python: { version: '', installed: false },
-  uv: { version: '', installed: false },
-  git: { version: '', installed: false },
-  pnpm: { version: '', installed: false }
+  python: { version: '', installed: false, source: 'missing', path: '' },
+  uv: { version: '', installed: false, source: 'missing', path: '' },
+  git: { version: '', installed: false, source: 'missing', path: '' },
+  pnpm: { version: '', installed: false, source: 'missing', path: '' }
 })
 
 const emptyKernel = (): KernelStatus => ({
   exists: false,
   remote: '',
   branch: '',
-  commit: '',
   commitShort: '',
   message: '',
   date: ''
@@ -39,8 +40,31 @@ const emptyKernel = (): KernelStatus => ({
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
+// 启动后延迟自动检查更新的毫秒数；期间若状态刷新占用则顺延重试
+const AUTO_CHECK_DELAY_MS = 1500
+
 export const useAppStore = defineStore('app', () => {
   const mode = ref<BackendMode>('checking')
+
+  // 主题：浅色 / 深色 / 跟随系统。跟随系统时监听系统配色变化。
+  const storedTheme = localStorage.getItem('aurora-theme')
+  const themeMode = ref<ThemeMode>(
+    storedTheme === 'light' || storedTheme === 'dark' || storedTheme === 'system' ? storedTheme : 'system'
+  )
+  const systemDark = ref(
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: dark)').matches
+      : false
+  )
+  const isDark = computed(() =>
+    themeMode.value === 'system' ? systemDark.value : themeMode.value === 'dark'
+  )
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (event) => {
+      systemDark.value = event.matches
+    })
+  }
+
   const dependencyStatus = ref<DependencyStatus>(defaultDependencies())
   const kernelStatus = ref<KernelStatus>(emptyKernel())
   const process = ref<AuroraProcessInfo | null>(null)
@@ -49,6 +73,11 @@ export const useAppStore = defineStore('app', () => {
   const logs = ref<LogLine[]>([])
   const bootTime = ref('')
   const coreDownloading = ref(false)
+  const autoCheckUpdate = ref(localStorage.getItem('aurora-auto-update') !== '0')
+  const availableUpdate = ref<LauncherUpdate | null>(null)
+  const updateDialogVisible = ref(false)
+  const checkingUpdate = ref(false)
+  const runtimeInfo = ref<RuntimeInfo | null>(null)
 
   function addLog(level: LogLine['level'], message: string) {
     logs.value.push({
@@ -124,10 +153,21 @@ export const useAppStore = defineStore('app', () => {
             pnpm: '9.12.0'
           }[kind],
           installed: true,
+          source: 'managed',
+          path: `runtime/tools/${kind}`,
           installedAt: new Date().toLocaleString('zh-CN', { hour12: false })
         }
       }
     }))
+  }
+
+  async function loadRuntimeInfo() {
+    if (!withReadyMode()) return
+    try {
+      runtimeInfo.value = await invoke<RuntimeInfo>('runtime_info')
+    } catch (e: any) {
+      addLog('error', `获取运行环境信息失败: ${e?.message || e}`)
+    }
   }
 
   async function refreshAll() {
@@ -148,6 +188,7 @@ export const useAppStore = defineStore('app', () => {
       dependencyStatus.value = result.dependency
       kernelStatus.value = result.kernel
       process.value = result.process
+      await loadRuntimeInfo()
     } catch (e: any) {
       addLog('error', `刷新状态失败: ${e?.message || e}`)
     } finally {
@@ -181,6 +222,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function installOne(kind: ToolKind, force = false) {
+    if (isBusy.value) return
     if (!withReadyMode()) {
       const order: ToolKind[] =
         kind === 'python' ? ['uv', 'python'] : kind === 'uv' ? ['uv'] : [kind]
@@ -206,6 +248,22 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function setToolDir(kind: ToolKind, path: string): Promise<void> {
+    if (!withReadyMode()) {
+      addLog('info', `演示模式：${kind} 安装目录已设为 ${path || '默认'}`)
+      return
+    }
+    try {
+      await invoke('set_tool_dir', { kind, path })
+      addLog('success', `${kind} 安装目录已更新，重新安装后生效`)
+      await refreshAll()
+    } catch (e: any) {
+      const message = `设置 ${kind} 目录失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
+    }
+  }
+
   async function cloneOrUpdate() {
     if (!withReadyMode()) {
       const existing = kernelStatus.value.exists
@@ -218,7 +276,6 @@ export const useAppStore = defineStore('app', () => {
               exists: true,
               remote: 'https://github.com/AuroraBot/AuroraBot.git',
               branch: 'main',
-              commit: '9f6d4a2b7c81e0f3d5a76c2b8f4a901c',
               commitShort: '9f6d4a2',
               message: 'chore: 保持内核与运行时契约同步',
               date: new Date().toLocaleString('zh-CN', { hour12: false })
@@ -246,6 +303,16 @@ export const useAppStore = defineStore('app', () => {
       throw new Error(message)
     } finally {
       isBusy.value = false
+    }
+  }
+
+  async function downloadCore() {
+    if (coreDownloading.value) return
+    coreDownloading.value = true
+    try {
+      await cloneOrUpdate()
+    } finally {
+      coreDownloading.value = false
     }
   }
 
@@ -319,6 +386,18 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function openExternal(url: string) {
+    if (!withReadyMode()) {
+      addLog('warn', `演示模式：无法打开外部链接 ${url}`)
+      return
+    }
+    try {
+      await invoke('open_external_url', { url })
+    } catch (e: any) {
+      addLog('error', `打开链接失败: ${e?.message || e}`)
+    }
+  }
+
   async function checkForUpdates(): Promise<LauncherUpdate | null> {
     if (!withReadyMode()) {
       addLog('warn', '演示模式：跳过检查更新（正式版本会查询 GitHub Releases）')
@@ -332,8 +411,9 @@ export const useAppStore = defineStore('app', () => {
       return update
     } catch (e: any) {
       const raw = e?.message || String(e)
-      // GitHub 上还没有任何 Release（或还没有 latest.json）时视为“暂无可更新”
-      if (/404|not\s?found|release|no update/i.test(raw)) {
+      // GitHub 上还没有任何 Release（或还没有 latest.json）时视为“暂无可更新”；
+      // 发布产物缺少当前平台（如 Windows 未构建）也会报 fallback platforms，同样视为无更新
+      if (/404|not\s?found|release|no update|fallback platforms/i.test(raw)) {
         addLog('info', '更新源暂无可用发布，当前版本无需更新')
         return null
       }
@@ -362,6 +442,56 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  function setThemeMode(value: ThemeMode) {
+    themeMode.value = value
+    localStorage.setItem('aurora-theme', value)
+  }
+
+  function setAutoCheckUpdate(enabled: boolean) {
+    autoCheckUpdate.value = enabled
+    localStorage.setItem('aurora-auto-update', enabled ? '1' : '0')
+  }
+
+  /// 手动检查更新：发现新版本时打开全局更新弹窗，否则返回 null。
+  async function requestUpdateCheck(): Promise<LauncherUpdate | null> {
+    if (checkingUpdate.value || isBusy.value) return null
+    checkingUpdate.value = true
+    try {
+      const update = await checkForUpdates()
+      if (update) {
+        availableUpdate.value = update
+        updateDialogVisible.value = true
+      }
+      return update
+    } finally {
+      checkingUpdate.value = false
+    }
+  }
+
+  async function runAutoCheck() {
+    if (!autoCheckUpdate.value) return
+    if (isBusy.value || checkingUpdate.value) {
+      window.setTimeout(runAutoCheck, AUTO_CHECK_DELAY_MS)
+      return
+    }
+    try {
+      const update = await checkForUpdates()
+      if (update) {
+        availableUpdate.value = update
+        updateDialogVisible.value = true
+      }
+    } catch {
+      // 自动检查失败保持静默，详情已写入日志
+    }
+  }
+
+  let autoCheckScheduled = false
+  function scheduleAutoCheck() {
+    if (autoCheckScheduled || mode.value !== 'tauri') return
+    autoCheckScheduled = true
+    window.setTimeout(runAutoCheck, AUTO_CHECK_DELAY_MS)
+  }
+
   function demoReset() {
     if (mode.value !== 'preview') return
     dependencyStatus.value = defaultDependencies()
@@ -370,10 +500,6 @@ export const useAppStore = defineStore('app', () => {
     progress.value = null
     logs.value = []
     addLog('info', '演示状态已重置，可重新体验初始化流程。')
-  }
-
-  function setCoreDownloading(downloading: boolean) {
-    coreDownloading.value = downloading
   }
 
   async function initListeners() {
@@ -412,19 +538,32 @@ export const useAppStore = defineStore('app', () => {
     logs,
     coreDownloading,
     mode,
+    isDark,
+    themeMode,
     bootTime,
+    autoCheckUpdate,
+    availableUpdate,
+    updateDialogVisible,
+    checkingUpdate,
+    runtimeInfo,
     refreshAll,
     installAll,
     installOne,
+    setToolDir,
     cloneOrUpdate,
+    downloadCore,
     startBot,
     stopBot,
     openFolder,
+    openExternal,
     checkForUpdates,
+    requestUpdateCheck,
+    scheduleAutoCheck,
+    setAutoCheckUpdate,
+    setThemeMode,
     installUpdate,
     addLog,
     demoReset,
-    setCoreDownloading,
     initListeners
   }
 })

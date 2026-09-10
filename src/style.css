@@ -27,3 +27,14 @@ button,
 input {
   font-family: inherit;
 }
+
+/* 鼠标点击不显示焦点环，仅在键盘导航（:focus-visible）时显示 */
+.n-button:focus:not(:focus-visible) {
+  background-color: var(--n-color) !important;
+  color: var(--n-text-color) !important;
+}
+
+.n-button:focus:not(:focus-visible) .n-button__state-border {
+  border: var(--n-border) !important;
+  border-color: transparent !important;
+}

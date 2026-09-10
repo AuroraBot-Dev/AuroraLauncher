@@ -61,8 +61,12 @@ impl KernelService {
 
     /// 可用的 Git：优先 launcher 自管的，其次系统 PATH 上的
     fn git_exe_resolved(&self) -> Option<PathBuf> {
-        if self.paths.git_exe().is_file() {
-            Some(self.paths.git_exe())
+        let overrides = self.settings.snapshot().tool_dirs;
+        let exe = self
+            .paths
+            .tool_exe(crate::manifest::ToolKind::Git, &overrides);
+        if exe.is_file() {
+            Some(exe)
         } else {
             crate::tools::system_exe_path(crate::manifest::ToolKind::Git)
         }
@@ -120,7 +124,6 @@ impl KernelService {
 
         let status = self.status()?;
         self.settings.update(|settings| {
-            settings.aurora_commit = status.commit.clone();
             settings.aurora_remote = status.remote.clone();
             settings.aurora_branch = status.branch.clone();
         })?;
@@ -228,7 +231,6 @@ impl KernelService {
 
         let status = self.status()?;
         self.settings.update(|settings| {
-            settings.aurora_commit = status.commit.clone();
             settings.aurora_remote = status.remote.clone();
             settings.aurora_branch = status.branch.clone();
         })?;
@@ -261,7 +263,6 @@ impl KernelService {
                 .trim()
                 .to_string()
         };
-        let commit = text(&["rev-parse", "HEAD"]);
         let commit_short = text(&["rev-parse", "--short=7", "HEAD"]);
         let message = text(&["log", "-1", "--pretty=%s"]);
         let date = text(&["log", "-1", "--pretty=%ci"]);
@@ -279,7 +280,6 @@ impl KernelService {
             } else {
                 branch
             },
-            commit,
             commit_short,
             message,
             date,
@@ -467,7 +467,7 @@ impl KernelService {
         let exe = self
             .git_exe_resolved()
             .ok_or_else(|| anyhow::anyhow!("未找到可用 Git"))?;
-        let mut cmd = Sandbox::new(&self.paths).command(&exe);
+        let mut cmd = Sandbox::new(&self.paths, &self.settings).command(&exe);
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }

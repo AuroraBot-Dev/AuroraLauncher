@@ -1,6 +1,10 @@
+export type ToolSource = 'managed' | 'system' | 'missing'
+
 export interface ToolMeta {
   version: string
   installed: boolean
+  source: ToolSource
+  path: string
   installedAt?: string
 }
 
@@ -15,7 +19,6 @@ export interface KernelStatus {
   exists: boolean
   remote: string
   branch: string
-  commit: string
   commitShort: string
   message: string
   date: string
@@ -49,3 +52,11 @@ export interface LauncherUpdate {
   date: string | null
   notes: string | null
 }
+
+export interface RuntimeInfo {
+  os: string
+  arch: string
+  root: string
+}
+
+export type ThemeMode = 'light' | 'dark' | 'system'
