@@ -48,7 +48,7 @@ cargo check
 
 ## ランタイムディレクトリ
 
-ポータブルモード：ランタイムデータは実行ファイルと同じ階層の `tool/` に置かれます。exe と `tool/` をまとめてコピーすれば移行でき、`tool/` を丸ごと削除すればリセットされます。
+ポータブルモード：ランタイムデータは実行ファイルと同じ階層の `tool/` に置かれます。exe と `tool/` をまとめてコピーすれば移行でき、`tool/` を丸ごと削除すればリセットされます。そのディレクトリが書き込み不可の場合（Linux のパッケージマネージャが `/usr/bin` に配置した場合など）は、ユーザーデータディレクトリ（Linux `~/.local/share/AuroraLauncher/tool`、macOS `~/Library/Application Support/dev.AuroraBot.AuroraLauncher/tool`、Windows `%APPDATA%\AuroraBot\AuroraLauncher\data\tool`）にフォールバックし、書き込みのために root 権限を要求しません。
 
 ```text
 <exe のあるディレクトリ>/

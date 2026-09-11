@@ -48,7 +48,7 @@ cargo check
 
 ## Runtime directory
 
-Portable mode: all runtime data lives in a `tool/` folder next to the executable. Copy the executable together with `tool/` to migrate; delete the whole `tool/` folder to reset.
+Portable mode: all runtime data lives in a `tool/` folder next to the executable. Copy the executable together with `tool/` to migrate; delete the whole `tool/` folder to reset. If that directory is not writable (e.g. a Linux package installed the binary under `/usr/bin`), the launcher falls back to a per-user data directory (Linux `~/.local/share/AuroraLauncher/tool`, macOS `~/Library/Application Support/dev.AuroraBot.AuroraLauncher/tool`, Windows `%APPDATA%\AuroraBot\AuroraLauncher\data\tool`) and never asks for root just to write data.
 
 ```text
 <exe dir>/

@@ -1,9 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::ToolKind;
@@ -30,13 +31,22 @@ pub struct RuntimePaths {
 
 impl RuntimePaths {
     pub fn default_user() -> Result<Self> {
-        // 便携模式：整套运行目录放在 exe 同级的 tool/ 下，随 exe 一起拷贝即迁移
+        // 便携模式：整套运行目录放在 exe 同级的 tool/ 下，随 exe 一起拷贝即迁移。
+        // 若 exe 位于只读/系统目录（例如 Linux 包管理器装到 /usr/bin），
+        // 同级不可写，则退回到用户数据目录，绝不为写盘而索取 root 权限。
         let exe_dir = std::env::current_exe()
             .context("无法定位当前可执行文件")?
             .parent()
             .context("可执行文件缺少父目录")?
             .to_path_buf();
-        Ok(Self::from_root(exe_dir.join("tool")))
+        let portable_root = exe_dir.join("tool");
+        if dir_writable(&portable_root) {
+            return Ok(Self::from_root(portable_root));
+        }
+        let data_root = user_data_root()
+            .context("可执行文件目录不可写，且无法定位用户数据目录")?
+            .join("tool");
+        Ok(Self::from_root(data_root))
     }
 
     pub fn from_root(root: PathBuf) -> Self {
@@ -173,6 +183,35 @@ impl RuntimePaths {
         }
         entries.push(self.env_scripts());
         entries
+    }
+}
+
+/// 非便携回退：用户数据目录下的 AuroraLauncher 根。
+fn user_data_root() -> Option<PathBuf> {
+    ProjectDirs::from("dev", "AuroraBot", "AuroraLauncher")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+}
+
+/// 判断目录可创建且可写。用临时文件探测，兼容属主非当前用户但仍有写权限的情况。
+fn dir_writable(dir: &Path) -> bool {
+    if dir.exists() {
+        return probe_writable(dir);
+    }
+    // 目录尚不存在：先确认父目录可写，再尝试创建。
+    match dir.parent() {
+        Some(parent) if probe_writable(parent) => std::fs::create_dir_all(dir).is_ok(),
+        _ => false,
+    }
+}
+
+fn probe_writable(dir: &Path) -> bool {
+    let probe = dir.join(".aurora-write-probe");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
     }
 }
 
