@@ -21,7 +21,7 @@ Tauri 2 desktop launcher for AuroraBot: a Vue 3 (naive-ui) frontend in `src/`, a
 
 ## Runtime state
 
-- State lives in a portable `tool/` folder next to the executable — `<exe dir>\tool` on Windows — with the sub-tree built in `state.rs::RuntimePaths` (state, downloads, staging, tools, env, kernel, home, cache, logs). If the exe dir is not writable (e.g. `/usr/bin` on Linux), `default_user` falls back to a per-user data dir (`directories::ProjectDirs`, still under a `tool/` subfolder) instead of requiring root. Deleting that `tool` dir fully resets the launcher; it never touches host PATH/registry.
+- State lives in a portable `tool/` folder next to the executable — `<exe dir>\tool` on Windows — with the sub-tree built in `state.rs::RuntimePaths` (state, downloads, staging, tools, env, kernel, home, cache, logs). If the exe dir is not writable (e.g. `/usr/bin` on Linux), `default_user` falls back to `~/.aurora-launcher/tool` in the home dir (`directories::BaseDirs`, same path on all platforms) instead of requiring root. Deleting that `tool` dir fully resets the launcher; it never touches host PATH/registry.
 - Tool "ready" status is two-source: launcher-managed dir first, else a usable system install found on the host PATH is reused and reported ready (see `tools.rs::system_exe_path`, `probe_version`). `resolve_exe`/`uv_command_exe`/`system_python` route real commands to managed-or-system binaries.
 - Frontend edits to a running feature are verified with `pnpm tauri:dev`; backend-only edits with `cargo check` from `src-tauri`.
 

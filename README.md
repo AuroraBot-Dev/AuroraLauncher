@@ -48,7 +48,7 @@ cargo check
 
 ## 运行时目录
 
-便携模式：整套运行数据放在可执行文件同级 `tool/` 下，与 exe 一起整体拷贝即可迁移；删除整个 `tool/` 即完成重置。若 exe 所在目录不可写（例如 Linux 包管理器装到 `/usr/bin`），自动改用用户数据目录（Linux `~/.local/share/AuroraLauncher/tool`、macOS `~/Library/Application Support/dev.AuroraBot.AuroraLauncher/tool`、Windows `%APPDATA%\AuroraBot\AuroraLauncher\data\tool`），不会为写盘索取 root 权限。
+便携模式：整套运行数据放在可执行文件同级 `tool/` 下，与 exe 一起整体拷贝即可迁移；删除整个 `tool/` 即完成重置。若 exe 所在目录不可写（例如 Linux 包管理器装到 `/usr/bin`），自动改用家目录下的 `~/.aurora-launcher/tool`（三平台路径一致），不会为写盘索取 root 权限。
 
 ```text
 <exe 所在目录>/

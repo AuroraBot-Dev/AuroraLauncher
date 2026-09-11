@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::manifest::ToolKind;
@@ -186,10 +186,9 @@ impl RuntimePaths {
     }
 }
 
-/// 非便携回退：用户数据目录下的 AuroraLauncher 根。
+/// 非便携回退：家目录下的 `~/.aurora-launcher`，三平台路径一致。
 fn user_data_root() -> Option<PathBuf> {
-    ProjectDirs::from("dev", "AuroraBot", "AuroraLauncher")
-        .map(|dirs| dirs.data_dir().to_path_buf())
+    BaseDirs::new().map(|dirs| dirs.home_dir().join(".aurora-launcher"))
 }
 
 /// 判断目录可创建且可写。用临时文件探测，兼容属主非当前用户但仍有写权限的情况。
