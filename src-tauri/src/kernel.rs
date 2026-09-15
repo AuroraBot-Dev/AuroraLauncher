@@ -247,6 +247,60 @@ impl KernelService {
         Ok(status)
     }
 
+    /// 运行内核自带的 `aurora about`，返回其描述文本。
+    /// 优先用虚拟环境里的 aurora 控制台脚本；没有时退回 `python -m aurora.main`。
+    pub fn about(&self, app: &AppHandle) -> Result<String> {
+        if !self.is_cloned() {
+            bail!("AuroraBot 内核尚未下载，请先下载核心");
+        }
+        if !self.paths.venv_ready() {
+            bail!("运行环境尚未准备，请先启动一次 AuroraBot 以创建虚拟环境");
+        }
+        let sandbox = Sandbox::new(&self.paths, &self.settings);
+        let mut cmd = match self.aurora_script() {
+            Some(script) => {
+                let mut cmd = sandbox.command(&script);
+                cmd.current_dir(&self.paths.kernel_aurora);
+                cmd
+            }
+            None => {
+                let mut cmd = sandbox.command(&self.paths.env_python());
+                cmd.current_dir(&self.paths.kernel_aurora);
+                cmd.arg("-m")
+                    .arg("aurora.main")
+                    .arg("--root")
+                    .arg(&self.paths.kernel_aurora);
+                cmd
+            }
+        };
+        cmd.arg("about");
+        events::log(app, "info", "读取内核描述（aurora about）");
+        let output = cmd.output().context("执行 aurora about 失败")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            bail!("aurora about 执行失败：{detail}");
+        }
+        // 只去掉末尾换行：LOGO 首行的缩进是排版的一部分，不能被 trim 掉
+        let text = String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .to_string();
+        if text.is_empty() {
+            bail!("aurora about 未返回任何内容");
+        }
+        Ok(text)
+    }
+
+    /// 虚拟环境中的 `aurora` 控制台脚本（Windows 为 aurora.exe）。
+    fn aurora_script(&self) -> Option<PathBuf> {
+        let candidate = self
+            .paths
+            .env_scripts()
+            .join(format!("aurora{}", crate::platform::exe_suffix()));
+        candidate.is_file().then_some(candidate)
+    }
+
     pub fn status(&self) -> Result<KernelStatus> {
         let settings = self.settings.snapshot();
         if !self.is_cloned() {
@@ -489,8 +543,13 @@ fn parse_progress_percent(text: &str) -> Option<u32> {
         let mut mul: u32 = 1;
         let mut j = i;
         while j > 0 && bytes[j - 1].is_ascii_digit() {
-            value = value.wrapping_add(u32::from(bytes[j - 1] - b'0').wrapping_mul(mul));
-            mul = mul.wrapping_mul(10);
+            // 数字串异常长（远超 git 的 3 位百分比）时直接放弃，
+            // 避免溢出算出一个错误百分比
+            let digit = u32::from(bytes[j - 1] - b'0');
+            value = digit
+                .checked_mul(mul)
+                .and_then(|part| value.checked_add(part))?;
+            mul = mul.saturating_mul(10);
             j -= 1;
         }
         if mul > 1 {

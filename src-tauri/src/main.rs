@@ -4,6 +4,7 @@
 mod archive;
 mod bot;
 mod commands;
+mod config;
 mod download;
 mod events;
 mod hash;
@@ -28,13 +29,23 @@ fn main() {
         .manage(updater::PendingUpdate(std::sync::Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             commands::check_all_status,
-            commands::install_all_deps,
             commands::install_dependency,
             commands::set_tool_dir,
+            commands::set_tool_source,
+            commands::set_download_source,
+            commands::set_github_mirror,
             commands::kernel_update,
+            commands::run_setup,
             commands::start_bot,
+            commands::send_bot_input,
             commands::stop_bot,
             commands::open_app_dir,
+            commands::open_tool_dir,
+            commands::open_kernel_dir,
+            commands::kernel_about,
+            config::read_launcher_config,
+            config::set_env_value,
+            config::set_app_enabled,
             commands::open_external_url,
             commands::runtime_info,
             updater::check_launcher_update,
@@ -44,12 +55,41 @@ fn main() {
         .with_context(|| "启动 AuroraLauncher 失败")
         .expect("Tauri 运行时退出异常");
 
-    app.run(|app_handle, event| {
+    app.run(|app_handle, event| match event {
         // 退出时把 launcher 启动的 Bot 一并停掉，避免留下孤儿 python 进程，
         // 否则残留进程会占用 tool 目录，导致后续“重装 python”删除时报 os error 5
-        if let tauri::RunEvent::Exit = event {
+        tauri::RunEvent::Exit => {
             let app_state = app_handle.state::<state::AppState>();
             let _ = bot::BotService::new(&app_state).stop(app_handle);
         }
+        // 窗口变大时按比例放大整个界面（等价浏览器缩放）：否则只是留白变多、字还是那么小
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::Resized(_),
+            ..
+        } => sync_zoom(app_handle, &label),
+        _ => {}
     });
+}
+
+/// 设计基准宽度，与 tauri.conf.json 里窗口的初始宽度一致。
+const DESIGN_WIDTH: f64 = 960.0;
+/// 放大上限：窗口再宽也不无限放大，避免在 4K 屏上字大得离谱。
+const MAX_ZOOM: f64 = 1.6;
+
+/// 按窗口逻辑宽度相对设计宽度的比例设置 WebView 缩放因子（只放大、不缩小）。
+/// 用 WebView 缩放而不是 CSS `zoom`：前者会改变 CSS 视口尺寸，`100vh` 之类仍然正确。
+fn sync_zoom(app: &tauri::AppHandle, label: &str) {
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    let Ok(scale_factor) = window.scale_factor() else {
+        return;
+    };
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let logical_width = f64::from(size.width) / scale_factor;
+    let zoom = (logical_width / DESIGN_WIDTH).clamp(1.0, MAX_ZOOM);
+    let _ = window.set_zoom(zoom);
 }

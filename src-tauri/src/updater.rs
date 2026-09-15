@@ -81,16 +81,18 @@ pub async fn install_launcher_update(
         .download_and_install(
             |chunk, total| {
                 downloaded += chunk as u64;
+                // kind 用 "launcher" 与内核的 "update" 区分开：更新弹窗有自己的进度条，
+                // 不会让「内核」页或主页的进度条跟着动
                 events::progress(
                     &app_for_events,
-                    "update",
+                    "launcher",
                     downloaded,
                     total,
                     Some("正在下载更新".to_string()),
                 );
             },
             || {
-                events::progress(&app_for_events, "update", 0, None, None);
+                events::progress(&app_for_events, "launcher", 0, None, None);
             },
         )
         .await
