@@ -460,7 +460,7 @@ impl KernelService {
                                     "clone",
                                     overall as u64,
                                     Some(100),
-                                    Some(format!("克隆 AuroraBot 内核 {overall}%")),
+                                    Some("克隆 AuroraBot 内核".into()),
                                 );
                             }
                             tail.clear();
@@ -497,7 +497,7 @@ impl KernelService {
                 "clone",
                 100,
                 Some(100),
-                Some("克隆 AuroraBot 内核 100%".into()),
+                Some("克隆 AuroraBot 内核".into()),
             );
         }
         Ok(Output {

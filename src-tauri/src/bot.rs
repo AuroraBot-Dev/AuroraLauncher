@@ -519,7 +519,7 @@ async fn capture_sync(mut cmd: Command, app: AppHandle) -> Result<Output> {
                 "sync",
                 5,
                 Some(100),
-                Some("同步 Python 依赖 5%".into()),
+                Some("同步 Python 依赖".into()),
             );
             loop {
                 line.clear();
@@ -535,7 +535,7 @@ async fn capture_sync(mut cmd: Command, app: AppHandle) -> Result<Output> {
                                     "sync",
                                     u64::from(pct),
                                     Some(100),
-                                    Some(format!("同步 Python 依赖 {pct}%")),
+                                    Some("同步 Python 依赖".into()),
                                 );
                             }
                         }
