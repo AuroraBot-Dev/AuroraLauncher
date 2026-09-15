@@ -7,6 +7,12 @@ name: Release
 # 私钥对应的公钥必须写入 src-tauri/tauri.conf.json 的 plugins.updater.pubkey。
 # 生成方式：pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
 # 详见 README“自动更新与发布”一节。
+#
+# 结构说明：先由 create-release 建好（或复用）唯一的 draft Release，再把它的
+# releaseId 显式传给三个平台。tauri-action 的 latest.json 生成器会读取同一
+# Release 里已有的 latest.json 并合并 platforms，因此必须保证所有平台都上传到
+# 同一个 Release；否则各平台各自建 Release，latest.json 会缺少其他平台条目
+# （例如 macOS 的 darwin-aarch64），对应平台就收不到更新。
 
 on:
   push:
@@ -22,11 +28,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 只创建一次 Release，输出 release_id 供各平台复用；重跑时复用已存在的 Release。
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+      release_tag: ${{ steps.ver.outputs.release_tag }}
+      app_version: ${{ steps.ver.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本单一来源是根目录 package.json（src-tauri/tauri.conf.json 通过
+      # "version": "../package.json" 引用它），tag 与 Release 都从这里解析。
+      - name: Resolve app version
+        id: ver
+        shell: bash
+        run: |
+          VER="$(node -p "require('./package.json').version")"
+          echo "app_version=$VER" >> "$GITHUB_OUTPUT"
+          echo "release_tag=v$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        id: create
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.ver.outputs.release_tag }}"
+          ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq .id 2>/dev/null || true)"
+          if [ -z "$ID" ]; then
+            ID="$(gh api "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="$TAG" \
+              -f name="$TAG" \
+              -f body="AuroraLauncher $TAG 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。" \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)"
+          fi
+          echo "release_id=$ID" >> "$GITHUB_OUTPUT"
+          echo "复用 Release $TAG (id=$ID)"
+
   publish-tauri:
+    needs: create-release
     strategy:
       fail-fast: false
-      # 串行执行：三个平台各自生成并上传 latest.json，并行会互相覆盖导致某个平台
-      # 的条目丢失（例如 Windows）。串行后每个平台都能读到并合并上一个平台的结果。
+      # 串行执行：三个平台都会读改写同一个 latest.json（tauri-action 会合并已有
+      # 条目），并行会互相覆盖导致某个平台的条目丢失。Release 已由 create-release
+      # 建好，这里只负责上传到它。
       max-parallel: 1
       matrix:
         include:
@@ -60,16 +109,6 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      # 版本单一来源是根目录 package.json（src-tauri/tauri.conf.json 通过
-      # "version": "../package.json" 引用它），tag 与 Release 都从这里解析。
-      - name: Resolve app version
-        id: ver
-        shell: bash
-        run: |
-          VER="$(node -p "require('./package.json').version")"
-          echo "app_version=$VER" >> "$GITHUB_OUTPUT"
-          echo "release_tag=v$VER" >> "$GITHUB_OUTPUT"
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,7 +124,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       # tauri-action 会自动执行 pnpm build（beforeBuildCommand）并打包、签名、
-      # 生成 updater 产物与 latest.json，最后把资产上传到（或补传到）GitHub Release。
+      # 生成 updater 产物与 latest.json，最后把资产上传到 create-release 建好的
+      # Release。显式传 releaseId 避免各平台按 tag 查找时各自创建 Release；
+      # 同时传 tagName，让 latest.json 里的下载地址指向该 tag 而非 releases/latest。
       - name: Build and publish
         uses: tauri-apps/tauri-action@v1
         env:
@@ -93,9 +134,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ steps.ver.outputs.release_tag }}
-          releaseName: 'AuroraLauncher ${{ steps.ver.outputs.release_tag }}'
-          releaseBody: 'AuroraLauncher ${{ steps.ver.outputs.release_tag }} 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。'
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ needs.create-release.outputs.release_tag }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -106,13 +146,14 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           set -euo pipefail
-          VERSION="${{ steps.ver.outputs.app_version }}"
+          VERSION="${{ needs.create-release.outputs.app_version }}"
           test -f src-tauri/target/release/aurora-launcher
           tar -czf "aurora-launcher_${VERSION}_linux-x86_64.tar.gz" -C src-tauri/target/release aurora-launcher
 
       - name: Upload portable tar.gz to release
         if: matrix.platform == 'ubuntu-22.04'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.release_tag }}
-          files: aurora-launcher_*.tar.gz
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.create-release.outputs.release_tag }}" aurora-launcher_*.tar.gz --clobber

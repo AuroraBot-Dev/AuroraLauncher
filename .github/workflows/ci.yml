@@ -59,7 +59,11 @@ jobs:
         working-directory: src-tauri
         run: cargo check
 
-      - name: Cargo clippy (report-only)
+      # clippy 现在是阻断的：有 warning 就直接失败，避免慢慢堆积
+      - name: Cargo clippy
         working-directory: src-tauri
-        continue-on-error: true
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Cargo test
+        working-directory: src-tauri
+        run: cargo test
