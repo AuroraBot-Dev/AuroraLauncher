@@ -48,22 +48,27 @@ cargo check
 
 ## Runtime directory
 
-Portable mode: all runtime data lives in a `tool/` folder next to the executable. Copy the executable together with `tool/` to migrate; delete the whole `tool/` folder to reset. If that directory is not writable (e.g. a Linux package installed the binary under `/usr/bin`), the launcher falls back to `~/.aurora-launcher/tool` in the home directory (same path on all platforms) and never asks for root just to write data.
+By default all runtime data lives in `~/.aurora-launcher/tool` in the home directory (same path on all platforms), so a read-only install location (e.g. `/usr/bin` on Linux) is never a problem. If a `tool/` folder already exists next to the executable (portable copy), that one is used instead — copy the executable together with `tool/` to migrate. Delete the whole `tool/` folder to reset; the launcher never asks for root just to write data.
 
 ```text
 <exe dir>/
 ├── aurora-launcher.exe
-└── tool/                  runtime root
-    ├── state/             settings.json and install records
-    ├── downloads/         download cache
-    ├── staging/           staging for unfinished installs
-    ├── tools/             python / uv / git / pnpm
-    ├── env/aurora/        dedicated AuroraBot venv
-    ├── kernel/auroraBot/  AuroraBot Git repository
-    ├── home/              managed HOME and user config
-    ├── cache/             uv / pip / npm caches
+└── tool/                  runtime root (4 top-level folders, grouped by purpose)
+    ├── runtime/           required to run
+    │   ├── tools/         managed tool binaries: git / uv / python / pnpm
+    │   ├── venv/          dedicated AuroraBot venv (base interpreter + deps)
+    │   └── kernel/auroraBot/  AuroraBot Git repository (with docs / panel submodules)
+    ├── data/              user data
+    │   ├── home/          sandbox HOME: AppData, temp, .gitconfig
+    │   └── state/         settings.json and install records
+    ├── cache/             disposable cache (auto-rebuilt)
+    │   ├── uv/ pip/ npm/    per-tool package caches
+    │   ├── downloads/       downloaded archives
+    │   └── staging/         staging for unfinished installs
     └── logs/              Bot and launcher logs
 ```
+
+Note: `runtime/tools/` holds tool **binaries**, while `cache/uv` is uv's **package cache** — they are different. `runtime/venv` is a virtualenv whose `Scripts/python.exe` is just an entry point to the base interpreter, not a second Python. When the base is the system Python, `runtime/tools/python/` stays empty.
 
 ## Architecture
 
@@ -79,12 +84,12 @@ Vue UI ──invoke / event──► Tauri command layer ──► AppState
 
 Key constraints:
 
-- Installs always go `downloads/ → staging/ → atomic rename into tools/<tool>/`, never straight into the live directory.
+- Installs always go `cache/downloads/ → cache/staging/ → atomic rename into tools/<tool>/`, never straight into the live directory.
 - Every child process goes through SandboxRunner (`env_clear()`; PATH / HOME / caches all point into `tool/`).
 - Tool readiness prefers the managed directory; if missing, a usable version on the host PATH is reused; only when neither exists does it download.
 - Before updating the kernel it checks for local tracked changes and refuses to overwrite the user's work.
 
-Pinned tool versions live in `src-tauri/src/manifest.rs`: Python `3.12.7`, uv `0.12.10`, Git `2.46.0`, pnpm `9.12.0`.
+Pinned tool versions live in `src-tauri/src/manifest.rs`: Python `3.12.7`, uv `0.12.10`, Git `2.55.0.5`, pnpm `9.12.0`.
 
 ## Auto-update and release
 
@@ -117,7 +122,6 @@ The private key exists only in GitHub Secrets; never commit it, and losing it me
 | Frontend call | Rust command | Purpose |
 | --- | --- | --- |
 | `check_all_status` | `check_all_status` | Return dependency, kernel, and Bot status |
-| `install_all_deps` | `install_all_deps` | Install Git, uv, Python, pnpm in order |
 | `install_dependency` | `install_dependency` | Install a single tool |
 | `setToolDir` | `set_tool_dir` | Set / clear a tool's custom install directory |
 | `kernel_update` | `kernel_update` | Download or Git-update the kernel |

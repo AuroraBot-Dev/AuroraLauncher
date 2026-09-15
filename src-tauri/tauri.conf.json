@@ -33,7 +33,7 @@
     "category": "Productivity",
     "shortDescription": "AuroraBot 自包含启动器",
     "longDescription": "AuroraLauncher 自主管理 Python/uv/Git/pnpm 与 AuroraBot 内核，运行时与宿主环境隔离。",
-    "copyright": "Apache-2.0",
+    "copyright": "Copyright (c) 2026 JuFireX | AuroraBot-Dev",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

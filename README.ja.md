@@ -48,22 +48,27 @@ cargo check
 
 ## ランタイムディレクトリ
 
-ポータブルモード：ランタイムデータは実行ファイルと同じ階層の `tool/` に置かれます。exe と `tool/` をまとめてコピーすれば移行でき、`tool/` を丸ごと削除すればリセットされます。そのディレクトリが書き込み不可の場合（Linux のパッケージマネージャが `/usr/bin` に配置した場合など）は、ホームディレクトリの `~/.aurora-launcher/tool`（全プラットフォーム共通）にフォールバックし、書き込みのために root 権限を要求しません。
+既定ではランタイムデータはホームディレクトリの `~/.aurora-launcher/tool`（全プラットフォーム共通）に置かれます。読み取り専用のインストール先（Linux の `/usr/bin` など）でも問題ありません。実行ファイルと同じ階層に `tool/` が**すでに存在する**場合（ポータブル版）はそちらを使用し、exe と `tool/` をまとめてコピーすれば移行できます。`tool/` を丸ごと削除すればリセットされ、書き込みのために root 権限を要求しません。
 
 ```text
 <exe のあるディレクトリ>/
 ├── aurora-launcher.exe
-└── tool/                  ランタイムルート
-    ├── state/             settings.json とインストール記録
-    ├── downloads/         ダウンロードキャッシュ
-    ├── staging/           未完了インストールのステージング
-    ├── tools/             python / uv / git / pnpm
-    ├── env/aurora/        AuroraBot 専用 venv
-    ├── kernel/auroraBot/  AuroraBot Git リポジトリ
-    ├── home/              管理下の HOME とユーザー設定
-    ├── cache/             uv / pip / npm キャッシュ
+└── tool/                  ランタイムルート（用途別に 4 フォルダ）
+    ├── runtime/           実行に必須
+    │   ├── tools/         管理下のツール本体：git / uv / python / pnpm
+    │   ├── venv/          AuroraBot 専用 venv（ベース解釈器 + 依存）
+    │   └── kernel/auroraBot/  AuroraBot Git リポジトリ（docs / panel サブモジュール含む）
+    ├── data/              ユーザーデータ
+    │   ├── home/          サンドボックス HOME：AppData、temp、.gitconfig
+    │   └── state/         settings.json とインストール記録
+    ├── cache/             削除可能なキャッシュ（自動再生成）
+    │   ├── uv/ pip/ npm/   各ツールのパッケージキャッシュ
+    │   ├── downloads/      ダウンロードしたアーカイブ
+    │   └── staging/        未完了インストールのステージング
     └── logs/              Bot とランチャーのログ
 ```
+
+補足：`runtime/tools/` はツールの**本体**、`cache/uv` は uv の**パッケージキャッシュ**で別物です。`runtime/venv` は仮想環境で、その `Scripts/python.exe` はベース解釈器への入口にすぎません（2 つ目の Python ではありません）。ベースがシステム Python の場合、`runtime/tools/python/` は空のままです。
 
 ## アーキテクチャ
 
@@ -79,12 +84,12 @@ Vue UI ──invoke / event──► Tauri コマンド層 ──► AppState
 
 主な制約：
 
-- インストールは常に `downloads/ → staging/ → tools/<tool>/ へアトミックにリネーム` の順で、正式ディレクトリへ直接書き込みません。
+- インストールは常に `cache/downloads/ → cache/staging/ → tools/<tool>/ へアトミックにリネーム` の順で、正式ディレクトリへ直接書き込みません。
 - すべての子プロセスは SandboxRunner を通ります（`env_clear()`、PATH / HOME / キャッシュはすべて `tool/` を指す）。
 - ツールの準備状態は管理ディレクトリを優先し、無ければホスト PATH 上の利用可能な版を再利用、どちらも無い場合のみダウンロードします。
 - カーネル更新前にローカルの tracked 変更を確認し、ユーザーの変更を上書きしません。
 
-ツールのバージョンは `src-tauri/src/manifest.rs` で固定：Python `3.12.7`、uv `0.12.10`、Git `2.46.0`、pnpm `9.12.0`。
+ツールのバージョンは `src-tauri/src/manifest.rs` で固定：Python `3.12.7`、uv `0.12.10`、Git `2.55.0.5`、pnpm `9.12.0`。
 
 ## 自動更新とリリース
 
@@ -117,7 +122,6 @@ pnpm tauri signer generate -w ~/.tauri/aurora-launcher.key
 | フロント呼び出し | Rust コマンド | 役割 |
 | --- | --- | --- |
 | `check_all_status` | `check_all_status` | 依存関係・カーネル・Bot の状態を返す |
-| `install_all_deps` | `install_all_deps` | Git、uv、Python、pnpm の順にインストール |
 | `install_dependency` | `install_dependency` | 単一ツールをインストール |
 | `setToolDir` | `set_tool_dir` | ツールのカスタムインストール先を設定 / 解除 |
 | `kernel_update` | `kernel_update` | カーネルをダウンロードまたは Git 更新 |
