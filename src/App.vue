@@ -12,7 +12,7 @@
               <div style="flex: 1; min-height: 0; overflow: auto">
                 <router-view />
               </div>
-              <MainActionBar />
+              <MainActionBar v-if="route.name === 'dashboard'" />
             </div>
           </n-layout>
         </n-layout>
@@ -24,6 +24,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   NConfigProvider,
   NDialogProvider,
@@ -41,14 +42,12 @@ import { useAppStore } from './stores/app'
 import { darkThemeOverrides, lightThemeOverrides } from './theme'
 
 const appStore = useAppStore()
+const route = useRoute()
 
 const activeOverrides = computed(() => (appStore.isDark ? darkThemeOverrides : lightThemeOverrides))
 
-onMounted(async () => {
-  if (appStore.mode === 'checking') {
-    await appStore.initListeners()
-    await appStore.refreshAll()
-  }
+onMounted(() => {
+  // 事件监听与首次状态刷新统一在 main.ts 里做，这里只安排启动后的自动检查更新
   appStore.scheduleAutoCheck()
 })
 </script>

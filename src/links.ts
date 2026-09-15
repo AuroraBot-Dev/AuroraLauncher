@@ -5,5 +5,6 @@ export const LINKS = {
   repo: REPO_URL,
   issues: `${REPO_URL}/issues`,
   releases: `${REPO_URL}/releases`,
-  license: 'https://www.apache.org/licenses/LICENSE-2.0'
+  license: `${REPO_URL}/blob/main/LICENSE`,
+  docs: 'https://www.aurorabot.org/'
 }

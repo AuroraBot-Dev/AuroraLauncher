@@ -57,12 +57,13 @@ export const darkThemeOverrides: GlobalThemeOverrides = {
 
 export const lightThemeOverrides: GlobalThemeOverrides = {
   common: {
-    primaryColor: '#0f9fa7',
-    primaryColorHover: '#0fb2b9',
-    primaryColorPressed: '#0d8b92',
-    primaryColorSuppl: '#0f9fa7',
-    infoColor: '#2f6fd6',
-    infoColorHover: '#4784e4',
+    primaryColor: '#006be6',
+    primaryColorHover: '#0a7cff',
+    primaryColorPressed: '#005ac2',
+    primaryColorSuppl: '#006be6',
+    infoColor: '#006be6',
+    infoColorHover: '#0a7cff',
+    infoColorPressed: '#005ac2',
     successColor: '#1aa268',
     successColorHover: '#26b677',
     successColorPressed: '#158c59',
