@@ -1,12 +1,7 @@
 <template>
   <div style="flex: none; padding-top: 12px">
     <n-flex align="center" justify="end" :size="16">
-      <n-flex v-if="progressVisible" align="center" :size="12" style="flex: 1; min-width: 0">
-        <n-text depth="3" style="white-space: nowrap">{{ progressLabel }}</n-text>
-        <n-progress type="line" :percentage="percent" :processing="indeterminate" :show-indicator="false" :height="8"
-          style="flex: 1" />
-        <n-text v-if="!indeterminate" depth="3">{{ percent }}%</n-text>
-      </n-flex>
+      <TaskProgress :kinds="lifecycleKinds" style="flex: 1; min-width: 0" />
 
       <n-button size="large" type="primary" :disabled="appStore.isBusy" :loading="appStore.coreDownloading"
         style="min-width: 112px" @click="primaryAction">
@@ -21,9 +16,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NButton, NFlex, NIcon, NProgress, NText, useMessage } from 'naive-ui'
+import { NButton, NFlex, NIcon, useMessage } from 'naive-ui'
 import { CircleClose, Download, VideoPlay } from '@element-plus/icons-vue'
 import { useAppStore } from '../stores/app'
+import TaskProgress from './TaskProgress.vue'
 
 const appStore = useAppStore()
 const message = useMessage()
@@ -38,14 +34,9 @@ const actionLabel = computed(() => {
 const actionIcon = computed(() =>
   botRunning.value ? CircleClose : kernelReady.value ? VideoPlay : Download
 )
-const percent = computed(() => {
-  const p = appStore.progress
-  if (!p?.total) return 0
-  return Math.min(100, Math.round((p.current / p.total) * 100))
-})
-const progressLabel = computed(() => appStore.progress?.label || '正在处理…')
-const progressVisible = computed(() => appStore.progress != null)
-const indeterminate = computed(() => !appStore.progress?.total)
+// 这条进度只跟内核/启动相关：下载核心（clone）、更新内核（update）、启动（sync）。
+// 依赖安装（git/uv/python/pnpm）有自己的进度条，不在这里动。
+const lifecycleKinds = ['clone', 'update', 'sync']
 
 async function primaryAction() {
   if (appStore.isBusy) return
@@ -82,7 +73,7 @@ async function handleDownloadCore() {
 
 async function launchBot() {
   try {
-    await appStore.startBot(true)
+    await appStore.startBot()
     message.success('AuroraBot 已启动')
   } catch (e: any) {
     message.error(e?.message || '启动失败')

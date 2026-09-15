@@ -4,6 +4,7 @@
       <n-text depth="3">
         当前版本 v{{ appStore.availableUpdate?.currentVersion }} → 新版本 v{{ appStore.availableUpdate?.version }}
       </n-text>
+      <TaskProgress boxed :kinds="launcherKinds" />
       <n-scrollbar style="max-height: 240px">
         <n-text v-if="appStore.availableUpdate?.notes" style="white-space: pre-wrap">
           {{ appStore.availableUpdate.notes }}
@@ -28,6 +29,10 @@
 import { ref } from 'vue'
 import { NButton, NModal, NScrollbar, NSpace, NText, useMessage } from 'naive-ui'
 import { useAppStore } from '../stores/app'
+import TaskProgress from './TaskProgress.vue'
+
+// 启动器自更新用独立的 kind，进度只显示在本弹窗里
+const launcherKinds = ['launcher']
 
 const appStore = useAppStore()
 const message = useMessage()

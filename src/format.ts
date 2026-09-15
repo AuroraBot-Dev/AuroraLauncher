@@ -10,3 +10,17 @@ export function formatToolVersion(version: string, installed: boolean): string {
   if (/\d/.test(cleaned)) return cleaned
   return installed ? '已安装（未探测到版本）' : '未安装'
 }
+
+/// 把字节/秒格式化成便于阅读的速度（如 `1.2 MB/s`）；0 或非法值返回空串。
+export function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytesPerSecond
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  const digits = unit === 0 || value >= 100 ? 0 : 1
+  return `${value.toFixed(digits)} ${units[unit]}/s`
+}

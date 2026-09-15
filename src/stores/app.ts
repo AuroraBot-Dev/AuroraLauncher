@@ -8,10 +8,13 @@ import type {
   AuroraProcessInfo,
   ProgressEvent,
   LogLine,
+  ChatRole,
+  ChatLine,
   ToolKind,
   LauncherUpdate,
   RuntimeInfo,
-  ThemeMode
+  ThemeMode,
+  LauncherConfig
 } from '../types'
 
 export type BackendMode = 'checking' | 'tauri' | 'preview'
@@ -71,13 +74,19 @@ export const useAppStore = defineStore('app', () => {
   const isBusy = ref(false)
   const progress = ref<ProgressEvent | null>(null)
   const logs = ref<LogLine[]>([])
-  const bootTime = ref('')
   const coreDownloading = ref(false)
+  const kernelAbout = ref('')
+  const loadingKernelAbout = ref(false)
   const autoCheckUpdate = ref(localStorage.getItem('aurora-auto-update') !== '0')
   const availableUpdate = ref<LauncherUpdate | null>(null)
   const updateDialogVisible = ref(false)
   const checkingUpdate = ref(false)
   const runtimeInfo = ref<RuntimeInfo | null>(null)
+  const launcherConfig = ref<LauncherConfig | null>(null)
+  const loadingConfig = ref(false)
+  const downloadSource = computed(() => runtimeInfo.value?.downloadSource ?? 'mirror')
+  const githubMirror = computed(() => runtimeInfo.value?.githubMirror ?? '')
+  const chatLines = ref<ChatLine[]>([])
 
   function addLog(level: LogLine['level'], message: string) {
     logs.value.push({
@@ -94,7 +103,7 @@ export const useAppStore = defineStore('app', () => {
     return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
   }
 
-  async function detectMode() {
+  function detectMode() {
     if (isTauriRuntime()) {
       mode.value = 'tauri'
     } else {
@@ -147,7 +156,7 @@ export const useAppStore = defineStore('app', () => {
       set: () => {
         dependencyStatus.value[kind] = {
           version: {
-            git: '2.46.0',
+            git: '2.55.0.5',
             python: '3.12.7',
             uv: '0.12.10',
             pnpm: '9.12.0'
@@ -159,6 +168,48 @@ export const useAppStore = defineStore('app', () => {
         }
       }
     }))
+  }
+
+  interface ActionOptions<T> {
+    /// 真实模式下调用的 Tauri 命令
+    run: () => Promise<T>
+    /// 演示模式下的模拟行为
+    demo?: () => void | Promise<void>
+    /// 失败日志前缀，同时作为抛出错误的文案前缀
+    failPrefix: string
+    /// 开始日志（仅真实模式）
+    startLog?: string
+    /// 成功日志（仅真实模式）
+    successLog?: string
+    /// 是否占用 isBusy，默认 true
+    busy?: boolean
+    /// 完成后的刷新动作，默认 refreshAll；传 false 表示不刷新
+    refresh?: (() => void | Promise<void>) | false
+  }
+
+  /// 统一「真实模式执行命令 / 演示模式走模拟」的样板：isBusy、开始/成功/失败日志、
+  /// 完成后刷新。演示分支只提供模拟行为，不再和真实分支成对复制。
+  async function runAction<T>(options: ActionOptions<T>): Promise<T | undefined> {
+    if (!withReadyMode()) {
+      if (options.demo) await options.demo()
+      return undefined
+    }
+    const busy = options.busy ?? true
+    if (busy) isBusy.value = true
+    if (options.startLog) addLog('info', options.startLog)
+    try {
+      const result = await options.run()
+      if (options.successLog) addLog('success', options.successLog)
+      const refresh = options.refresh === false ? null : options.refresh ?? refreshAll
+      if (refresh) await refresh()
+      return result
+    } catch (e: any) {
+      const message = `${options.failPrefix}: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
+    } finally {
+      if (busy) isBusy.value = false
+    }
   }
 
   async function loadRuntimeInfo() {
@@ -196,114 +247,146 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function installAll() {
-    if (!withReadyMode()) {
-      await runDemoSteps(
-        demoInstallSteps(['git', 'uv', 'python', 'pnpm']).filter(
-          (step) => !dependencyStatus.value[step.kind as ToolKind].installed
-        )
-      )
-      await refreshAll()
-      return
-    }
-    try {
-      isBusy.value = true
-      addLog('info', '开始安装全部依赖...')
-      await invoke('install_all_deps')
-      addLog('success', '依赖安装完成')
-      await refreshAll()
-    } catch (e: any) {
-      const message = `安装依赖失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
-    } finally {
-      isBusy.value = false
-    }
-  }
-
   async function installOne(kind: ToolKind, force = false) {
     if (isBusy.value) return
-    if (!withReadyMode()) {
-      const order: ToolKind[] =
-        kind === 'python' ? ['uv', 'python'] : kind === 'uv' ? ['uv'] : [kind]
-      const filtered = demoInstallSteps(order).filter(
-        (step) => !dependencyStatus.value[step.kind as ToolKind].installed
-      )
-      await runDemoSteps(filtered)
-      await refreshAll()
-      return
-    }
-    try {
-      isBusy.value = true
-      addLog('info', `开始${force ? '重' : ''}安装 ${kind}...`)
-      await invoke('install_dependency', { kind, force })
-      addLog('success', `${kind} 安装完成`)
-      await refreshAll()
-    } catch (e: any) {
-      const message = `安装 ${kind} 失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
-    } finally {
-      isBusy.value = false
-    }
+    await runAction({
+      startLog: `开始${force ? '重' : ''}安装 ${kind}...`,
+      successLog: `${kind} 安装完成`,
+      failPrefix: `安装 ${kind} 失败`,
+      run: () => invoke('install_dependency', { kind, force }),
+      demo: async () => {
+        const order: ToolKind[] =
+          kind === 'python' ? ['uv', 'python'] : kind === 'uv' ? ['uv'] : [kind]
+        const filtered = demoInstallSteps(order).filter(
+          (step) => !dependencyStatus.value[step.kind as ToolKind].installed
+        )
+        await runDemoSteps(filtered)
+        await refreshAll()
+      }
+    })
   }
 
   async function setToolDir(kind: ToolKind, path: string): Promise<void> {
-    if (!withReadyMode()) {
-      addLog('info', `演示模式：${kind} 安装目录已设为 ${path || '默认'}`)
-      return
-    }
-    try {
-      await invoke('set_tool_dir', { kind, path })
-      addLog('success', `${kind} 安装目录已更新，重新安装后生效`)
-      await refreshAll()
-    } catch (e: any) {
-      const message = `设置 ${kind} 目录失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
+    await runAction({
+      busy: false,
+      successLog: `${kind} 安装目录已更新，重新安装后生效`,
+      failPrefix: `设置 ${kind} 目录失败`,
+      run: () => invoke('set_tool_dir', { kind, path }),
+      demo: () => addLog('info', `演示模式：${kind} 安装目录已设为 ${path || '默认'}`)
+    })
+  }
+
+  function addChatLine(role: ChatRole, text: string) {
+    chatLines.value.push({ role, text })
+    if (chatLines.value.length > 1000) {
+      chatLines.value = chatLines.value.slice(-1000)
     }
   }
 
-  async function cloneOrUpdate() {
+  function clearChat() {
+    chatLines.value = []
+  }
+
+  function clearLogs() {
+    logs.value = []
+  }
+
+  /// 往 Bot 的 stdin 写入一行对话输入。
+  async function sendChatInput(text: string): Promise<void> {
+    const value = text.trim()
+    if (!value) return
+    addChatLine('user', value)
     if (!withReadyMode()) {
-      const existing = kernelStatus.value.exists
-      await runDemoSteps([
-        {
-          kind: 'clone',
-          label: existing ? '拉取内核最新代码' : '克隆 AuroraBot 内核仓库',
-          set: () => {
-            kernelStatus.value = {
-              exists: true,
-              remote: 'https://github.com/AuroraBot/AuroraBot.git',
-              branch: 'main',
-              commitShort: '9f6d4a2',
-              message: 'chore: 保持内核与运行时契约同步',
-              date: new Date().toLocaleString('zh-CN', { hour12: false })
-            }
-          }
-        },
-        {
-          kind: 'sync',
-          label: '使用 uv 同步内核 Python 依赖',
-          set: () => addLog('info', '虚拟环境已就绪：runtime/env/aurora')
-        }
-      ])
-      await refreshAll()
+      addChatLine('bot', '（演示模式：无真实 Bot 回复）')
       return
     }
     try {
-      isBusy.value = true
-      addLog('info', kernelStatus.value.exists ? '开始更新内核源码...' : '开始下载 AuroraBot 内核...')
-      await invoke('kernel_update')
-      addLog('success', '内核更新完成')
-      await refreshAll()
+      await invoke('send_bot_input', { text: value })
     } catch (e: any) {
-      const message = `内核操作失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
-    } finally {
-      isBusy.value = false
+      addChatLine('system', `启动器错误: ${e?.message || e}`)
+      throw new Error(e?.message || '发送失败')
     }
+  }
+
+  /// 手动运行启动器 setup：初始化内核（工具/克隆/子模块/配置/venv/依赖）。
+  async function runSetup(): Promise<void> {
+    await runAction({
+      startLog: '开始初始化内核...',
+      successLog: '内核初始化完成',
+      failPrefix: '内核初始化失败',
+      run: () => invoke('run_setup'),
+      demo: () => addLog('info', '演示模式：跳过内核初始化')
+    })
+  }
+
+  /// 设置包下载源：'mirror'（国内镜像）或 'official'。
+  async function setDownloadSource(source: string): Promise<void> {
+    await runAction({
+      busy: false,
+      refresh: loadRuntimeInfo,
+      successLog: `下载源已切换为${source === 'official' ? '官方源' : '国内镜像'}`,
+      failPrefix: '切换下载源失败',
+      run: () => invoke('set_download_source', { source }),
+      demo: () => addLog('info', `演示模式：下载源已设为 ${source}`)
+    })
+  }
+
+  /// 设置 GitHub 加速前缀（留空 = 直连 github.com）。只影响工具安装包与 Python 解释器。
+  async function setGithubMirror(mirror: string): Promise<void> {
+    await runAction({
+      busy: false,
+      refresh: loadRuntimeInfo,
+      successLog: mirror.trim() ? 'GitHub 加速前缀已保存' : '已恢复直连 github.com',
+      failPrefix: '保存加速前缀失败',
+      run: () => invoke('set_github_mirror', { mirror }),
+      demo: () => addLog('info', `演示模式：加速前缀已设为 ${mirror.trim() || '直连'}`)
+    })
+  }
+
+  /// 选择工具来源：useSystem=true 优先系统版本，false 优先启动器副本。
+  async function setToolSource(kind: ToolKind, useSystem: boolean): Promise<void> {
+    await runAction({
+      busy: false,
+      successLog: `${kind} 来源已切换为${useSystem ? '系统版本' : '启动器副本'}`,
+      failPrefix: `切换 ${kind} 来源失败`,
+      run: () => invoke('set_tool_source', { kind, useSystem }),
+      demo: () =>
+        addLog('info', `演示模式：${kind} 来源已设为 ${useSystem ? '系统版本' : '启动器副本'}`)
+    })
+  }
+
+  async function cloneOrUpdate() {
+    await runAction({
+      startLog: kernelStatus.value.exists ? '开始更新内核源码...' : '开始下载 AuroraBot 内核...',
+      successLog: '内核更新完成',
+      failPrefix: '内核操作失败',
+      run: () => invoke('kernel_update'),
+      demo: async () => {
+        const existing = kernelStatus.value.exists
+        await runDemoSteps([
+          {
+            kind: 'clone',
+            label: existing ? '拉取内核最新代码' : '克隆 AuroraBot 内核仓库',
+            set: () => {
+              kernelStatus.value = {
+                exists: true,
+                remote: 'https://github.com/AuroraBot/AuroraBot.git',
+                branch: 'main',
+                commitShort: '9f6d4a2',
+                message: 'chore: 保持内核与运行时契约同步',
+                date: new Date().toLocaleString('zh-CN', { hour12: false })
+              }
+            }
+          },
+          {
+            kind: 'sync',
+            label: '使用 uv 同步内核 Python 依赖',
+            set: () => addLog('info', '虚拟环境已就绪：runtime/venv')
+          }
+        ])
+        await refreshAll()
+      }
+    })
   }
 
   async function downloadCore() {
@@ -316,62 +399,50 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function startBot(headless = true) {
-    if (!withReadyMode()) {
-      await runDemoStep({
-        kind: 'sync',
-        label: '启动 AuroraBot 内核进程',
-        set: () => {
-          process.value = {
-            running: true,
-            pid: 48216,
-            startedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
-            logFile: 'runtime/logs/aurora-bot.log'
+  async function startBot() {
+    await runAction({
+      startLog: '启动 AuroraBot...',
+      successLog: 'AuroraBot 已启动',
+      failPrefix: '启动 Bot 失败',
+      run: async () => {
+        // 启动前清空对话，避免残留上次会话的内容
+        chatLines.value = []
+        await invoke('start_bot')
+      },
+      demo: async () => {
+        await runDemoStep({
+          kind: 'sync',
+          label: '启动 AuroraBot 内核进程',
+          set: () => {
+            process.value = {
+              running: true,
+              pid: 48216,
+              startedAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+              logFile: 'logs/aurora-bot.log'
+            }
           }
-        }
-      })
-      await refreshAll()
-      return
-    }
-    try {
-      isBusy.value = true
-      addLog('info', `启动 AuroraBot (headless=${headless})...`)
-      await invoke('start_bot', { headless })
-      addLog('success', 'AuroraBot 已启动')
-      await refreshAll()
-    } catch (e: any) {
-      const message = `启动 Bot 失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
-    } finally {
-      isBusy.value = false
-    }
+        })
+        await refreshAll()
+      }
+    })
   }
 
   async function stopBot() {
-    if (!withReadyMode()) {
-      isBusy.value = true
-      addLog('info', '正在停止 AuroraBot 进程 ...')
-      await sleep(450)
-      process.value = null
-      addLog('success', 'AuroraBot 已停止')
-      isBusy.value = false
-      await refreshAll()
-      return
-    }
-    try {
-      isBusy.value = true
-      addLog('info', '停止 AuroraBot...')
-      await invoke('stop_bot')
-      addLog('success', 'AuroraBot 已停止')
-      await refreshAll()
-    } catch (e: any) {
-      const message = `停止 Bot 失败: ${e?.message || e}`
-      addLog('error', message)
-      throw new Error(message)
-    } finally {
-      isBusy.value = false
-    }
+    await runAction({
+      startLog: '停止 AuroraBot...',
+      successLog: 'AuroraBot 已停止',
+      failPrefix: '停止 Bot 失败',
+      run: () => invoke('stop_bot'),
+      demo: async () => {
+        isBusy.value = true
+        addLog('info', '正在停止 AuroraBot 进程 ...')
+        await sleep(450)
+        process.value = null
+        addLog('success', 'AuroraBot 已停止')
+        isBusy.value = false
+        await refreshAll()
+      }
+    })
   }
 
   async function openFolder() {
@@ -383,6 +454,106 @@ export const useAppStore = defineStore('app', () => {
       await invoke('open_app_dir')
     } catch (e: any) {
       addLog('error', `打开目录失败: ${e?.message || e}`)
+    }
+  }
+
+  /// 在文件管理器中定位某工具的实际安装目录。
+  async function openToolDir(kind: ToolKind) {
+    if (!withReadyMode()) {
+      addLog('warn', `演示模式：无法打开 ${kind} 目录`)
+      return
+    }
+    try {
+      await invoke('open_tool_dir', { kind })
+    } catch (e: any) {
+      addLog('error', `打开 ${kind} 目录失败: ${e?.message || e}`)
+    }
+  }
+
+  /// 在文件管理器中定位 AuroraBot 内核目录。
+  async function openKernelDir() {
+    if (!withReadyMode()) {
+      addLog('warn', '演示模式：无法打开内核目录')
+      return
+    }
+    try {
+      await invoke('open_kernel_dir')
+    } catch (e: any) {
+      addLog('error', `打开内核目录失败: ${e?.message || e}`)
+    }
+  }
+
+  /// 运行内核的 `aurora about`，把描述文本缓存起来供内核页展示。
+  async function loadKernelAbout() {
+    if (loadingKernelAbout.value) return
+    if (!withReadyMode()) {
+      kernelAbout.value =
+        '演示模式：此处将展示内核 `aurora about` 的输出，包含内核名称、版本与功能简介。'
+      return
+    }
+    loadingKernelAbout.value = true
+    try {
+      kernelAbout.value = await invoke<string>('kernel_about')
+      addLog('info', '已读取内核描述')
+    } catch (e: any) {
+      const message = `获取内核描述失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
+    } finally {
+      loadingKernelAbout.value = false
+    }
+  }
+
+  /// 读取内核运行配置：需要在 .env 填写的变量，以及 apps.toml 里的平台。
+  async function loadLauncherConfig(): Promise<void> {
+    if (!withReadyMode()) {
+      launcherConfig.value = {
+        env: [
+          { name: 'DEEPSEEK_API_KEY', value: '', secret: true },
+          { name: 'AURORA_QQ_TOKEN', value: '', secret: true }
+        ],
+        apps: [
+          { package: 'org.aurora.clock', enabled: false },
+          { package: 'com.github.windows_mcp', enabled: false },
+          { package: 'org.aurora.qq', enabled: false }
+        ]
+      }
+      return
+    }
+    loadingConfig.value = true
+    try {
+      launcherConfig.value = await invoke<LauncherConfig>('read_launcher_config')
+    } catch (e: any) {
+      addLog('error', `读取配置失败: ${e?.message || e}`)
+      throw new Error(e?.message || '读取配置失败')
+    } finally {
+      loadingConfig.value = false
+    }
+  }
+
+  async function setEnvValue(name: string, value: string): Promise<void> {
+    await runAction({
+      busy: false,
+      refresh: false,
+      successLog: `${name} 已保存`,
+      failPrefix: `保存 ${name} 失败`,
+      run: () => invoke('set_env_value', { name, value }),
+      demo: () => addLog('info', `演示模式：${name} 已保存`)
+    })
+  }
+
+  async function setAppEnabled(pkg: string, enabled: boolean): Promise<void> {
+    if (!withReadyMode()) {
+      addLog('info', `演示模式：${pkg} enabled=${enabled}`)
+      return
+    }
+    try {
+      await invoke('set_app_enabled', { package: pkg, enabled })
+      addLog(enabled ? 'success' : 'info', `${pkg} 已${enabled ? '启用' : '停用'}`)
+    } catch (e: any) {
+      const message = `切换 ${pkg} 失败: ${e?.message || e}`
+      addLog('error', message)
+      throw new Error(message)
     }
   }
 
@@ -492,18 +663,13 @@ export const useAppStore = defineStore('app', () => {
     window.setTimeout(runAutoCheck, AUTO_CHECK_DELAY_MS)
   }
 
-  function demoReset() {
-    if (mode.value !== 'preview') return
-    dependencyStatus.value = defaultDependencies()
-    kernelStatus.value = emptyKernel()
-    process.value = null
-    progress.value = null
-    logs.value = []
-    addLog('info', '演示状态已重置，可重新体验初始化流程。')
-  }
-
+  let listenersInitialized = false
   async function initListeners() {
-    await detectMode()
+    // main.ts 与 App.vue 都会调用本函数，先占位再 await，避免竞态下重复注册
+    // 导致每条日志出现两次
+    if (listenersInitialized) return
+    listenersInitialized = true
+    detectMode()
     if (!isTauriRuntime()) return
     await listen<ProgressEvent>('progress', (event: Event<ProgressEvent>) => {
       const payload = event.payload
@@ -527,6 +693,9 @@ export const useAppStore = defineStore('app', () => {
         process.value = event.payload
       }
     )
+    await listen<string>('bot-output', (event: Event<string>) => {
+      addChatLine('bot', event.payload)
+    })
   }
 
   return {
@@ -537,24 +706,42 @@ export const useAppStore = defineStore('app', () => {
     progress,
     logs,
     coreDownloading,
+    kernelAbout,
+    loadingKernelAbout,
     mode,
     isDark,
     themeMode,
-    bootTime,
     autoCheckUpdate,
     availableUpdate,
     updateDialogVisible,
     checkingUpdate,
     runtimeInfo,
+    launcherConfig,
+    loadingConfig,
+    loadLauncherConfig,
+    setEnvValue,
+    setAppEnabled,
+    downloadSource,
+    setDownloadSource,
+    githubMirror,
+    setGithubMirror,
+    runSetup,
+    chatLines,
+    sendChatInput,
+    clearChat,
+    clearLogs,
     refreshAll,
-    installAll,
     installOne,
     setToolDir,
+    setToolSource,
     cloneOrUpdate,
     downloadCore,
     startBot,
     stopBot,
     openFolder,
+    openToolDir,
+    openKernelDir,
+    loadKernelAbout,
     openExternal,
     checkForUpdates,
     requestUpdateCheck,
@@ -563,7 +750,6 @@ export const useAppStore = defineStore('app', () => {
     setThemeMode,
     installUpdate,
     addLog,
-    demoReset,
     initListeners
   }
 })
