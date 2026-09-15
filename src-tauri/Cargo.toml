@@ -4,6 +4,7 @@ name = "aurora-launcher"
 # 这里只是 Rust crate 元数据，不决定安装包/自动更新版本，改版本号时无需同步。
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -15,7 +16,11 @@ directories = "5"
 flate2 = "1"
 futures-util = "0.3"
 hex = "0.4"
-reqwest = { version = "0.12", default-features = false, features = ["stream", "native-tls", "gzip"] }
+# 用 rustls 替代 Windows schannel：schannel 会做证书吊销检查（CRL/OCSP），
+# 国内网络常因吊销服务器不可达导致握手失败（unexpected EOF during handshake）。
+# 使用 native-roots 读取系统证书库，兼容 Watt Toolkit 等加速软件的本地根证书。
+# system-proxy 让客户端自动读取系统代理（环境变量或 WinINET）。
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots", "gzip", "system-proxy"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

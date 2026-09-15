@@ -10,6 +10,9 @@ pub struct ProgressEvent {
     pub total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// 瞬时下载速度（字节/秒）；只有下载阶段有值，供前端显示 “x MB/s”。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,6 +32,11 @@ pub fn log(app: &AppHandle, level: impl Into<String>, message: impl Into<String>
     );
 }
 
+/// Bot 自身 stdout 的原始行（对话输出），供「对话」页展示。
+pub fn bot_output(app: &AppHandle, line: impl Into<String>) {
+    let _ = app.emit("bot-output", line.into());
+}
+
 pub fn progress(
     app: &AppHandle,
     kind: impl Into<String>,
@@ -43,6 +51,28 @@ pub fn progress(
             current,
             total,
             label,
+            speed: None,
+        },
+    );
+}
+
+/// 下载专用进度：额外带上瞬时速度（字节/秒）。
+pub fn progress_download(
+    app: &AppHandle,
+    kind: impl Into<String>,
+    current: u64,
+    total: Option<u64>,
+    label: Option<String>,
+    speed: u64,
+) {
+    let _ = app.emit(
+        "progress",
+        ProgressEvent {
+            kind: kind.into(),
+            current,
+            total,
+            label,
+            speed: Some(speed),
         },
     );
 }

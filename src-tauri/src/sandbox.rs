@@ -51,6 +51,27 @@ impl<'a> Sandbox<'a> {
         }
 
         let mut path_entries = self.paths.tool_path_entries(&overrides);
+        // 受管工具缺失时会回退到系统 PATH 上的同名工具，但沙箱 PATH 只含受管目录，
+        // 导致内核 `aurora setup` 里按名字调用的 uv/git/pnpm 找不到；这里把实际解析到的
+        // 系统工具目录补进来，保证子进程按名字也能调用。
+        for kind in [ToolKind::Uv, ToolKind::Git, ToolKind::Pnpm] {
+            if self.paths.tool_exe(kind, &overrides).is_file() {
+                continue;
+            }
+            if let Some(dir) =
+                crate::tools::system_exe_path(kind).and_then(|exe| exe.parent().map(Path::to_path_buf))
+            {
+                path_entries.push(dir);
+            }
+        }
+        // 系统 pnpm 是 npm 包装脚本，运行时还需要 node；受管 pnpm 是独立 exe，无需 node
+        if !self.paths.tool_exe(ToolKind::Pnpm, &overrides).is_file() {
+            if let Some(dir) =
+                crate::tools::which_in_path("node").and_then(|exe| exe.parent().map(Path::to_path_buf))
+            {
+                path_entries.push(dir);
+            }
+        }
         if is_windows() {
             path_entries.push(PathBuf::from("C:\\Windows\\System32"));
             path_entries.push(PathBuf::from("C:\\Windows"));
@@ -82,8 +103,29 @@ impl<'a> Sandbox<'a> {
         cmd.env("UV_PROJECT_ENVIRONMENT", &self.paths.env_aurora);
         cmd.env("VIRTUAL_ENV", &self.paths.env_aurora);
         cmd.env("PIP_CACHE_DIR", self.paths.root.join("cache").join("pip"));
+        // 包下载源：默认走国内 PyPI 镜像（只影响沙箱内的 uv/pip，不动宿主）
+        if self.settings.download_source() != "official" {
+            cmd.env("UV_DEFAULT_INDEX", crate::manifest::PYPI_MIRROR);
+            cmd.env("PIP_INDEX_URL", crate::manifest::PYPI_MIRROR);
+        }
+        // GitHub 加速：非空时 uv 下载 Python 解释器改走镜像。
+        // （工具安装包同样套这个前缀，见 tools.rs::install_package）
+        let github_mirror = self.settings.github_mirror();
+        if !github_mirror.is_empty() {
+            cmd.env(
+                "UV_PYTHON_INSTALL_MIRROR",
+                crate::manifest::apply_github_mirror(
+                    crate::manifest::PYTHON_BUILD_STANDALONE,
+                    &github_mirror,
+                ),
+            );
+        }
         cmd.env("PYTHONNOUSERSITE", "1");
         cmd.env("PYTHONUSERBASE", self.paths.home.join(".local"));
+        // Windows 下 Python 默认按控制台代码页（简体中文为 GBK）编码管道输出，
+        // 内核 `aurora about` 的 Unicode 图标会因此 UnicodeEncodeError；强制 UTF-8。
+        cmd.env("PYTHONIOENCODING", "utf-8");
+        cmd.env("PYTHONUTF8", "1");
         cmd.env("GIT_CONFIG_NOSYSTEM", "1");
         cmd.env("GIT_CONFIG_GLOBAL", self.paths.home.join(".gitconfig"));
         cmd.env(

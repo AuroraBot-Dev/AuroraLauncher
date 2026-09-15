@@ -43,16 +43,49 @@ impl ToolService {
         }
     }
 
-    /// 实际使用的工具路径：优先 launcher 自管的，其次系统 PATH 上可用的
+    /// 实际使用的工具路径：默认优先 launcher 自管的，设置里选了“系统版本”则系统优先。
     pub fn resolve_exe(&self, kind: ToolKind) -> Option<PathBuf> {
         match kind {
             ToolKind::Python => self.system_python(),
-            _ => self.managed_exe(kind).or_else(|| system_exe_path(kind)),
+            _ => {
+                if self.settings.tool_prefers_system(kind) {
+                    system_exe_path(kind).or_else(|| self.managed_exe(kind))
+                } else {
+                    self.managed_exe(kind).or_else(|| system_exe_path(kind))
+                }
+            }
         }
     }
 
     pub fn uv_command_exe(&self) -> Option<PathBuf> {
         self.resolve_exe(ToolKind::Uv)
+    }
+
+    /// “定位”用的实际安装目录：自管目录优先，其次系统可执行文件所在目录。
+    /// 缺失时返回 None（前端据此隐藏定位入口）。
+    pub fn locate_dir(&self, kind: ToolKind) -> Option<PathBuf> {
+        let overrides = self.settings.snapshot().tool_dirs;
+        let managed = self.paths.tool_dir(kind, &overrides);
+        let managed_ready = match kind {
+            // Python 由 uv 管理、没有单一 exe，只要目录里有内容即视为自管就绪
+            ToolKind::Python => dir_has_entries(&managed),
+            _ => self.managed_exe(kind).is_some(),
+        };
+        // Python 用 system_python()：它会跳过微软商店占位符，保证拿到的路径可用
+        let system_dir = if kind == ToolKind::Python {
+            self.system_python()
+                .map(|exe| exe.parent().map(Path::to_path_buf).unwrap_or(exe))
+        } else {
+            system_exe_path(kind).map(|exe| exe.parent().map(Path::to_path_buf).unwrap_or(exe))
+        };
+        // 按来源偏好返回真实使用的位置：选了系统版本就用系统目录，否则自管目录优先
+        if self.settings.tool_prefers_system(kind) {
+            system_dir.or(managed_ready.then_some(managed))
+        } else if managed_ready {
+            Some(managed)
+        } else {
+            system_dir
+        }
     }
 
     /// 系统 PATH 上的 Python（自管 Python 缺失时兜底）
@@ -149,18 +182,6 @@ impl ToolService {
         Ok(())
     }
 
-    pub async fn install_all(&self, app: &AppHandle) -> Result<()> {
-        for kind in [
-            ToolKind::Git,
-            ToolKind::Uv,
-            ToolKind::Python,
-            ToolKind::Pnpm,
-        ] {
-            self.install(kind, app, false).await?;
-        }
-        Ok(())
-    }
-
     async fn install_python(&self, app: &AppHandle) -> Result<()> {
         if self.uv_command_exe().is_none() {
             self.install_uv(app).await?;
@@ -203,6 +224,7 @@ impl ToolService {
                     url: "uv-managed-python-build-standalone".into(),
                     installed_at: Some(now),
                     path: python_dir.display().to_string(),
+                    prefer_system: false,
                 },
             );
         })?;
@@ -230,20 +252,18 @@ impl ToolService {
         if !archive.exists() {
             let app_for_progress = app.clone();
             let kind_label = kind.label().to_string();
-            download_verified(
-                &package.url,
-                &archive,
-                package.sha256.as_deref(),
-                move |current, total| {
-                    events::progress(
-                        &app_for_progress,
-                        kind_label.clone(),
-                        current,
-                        (total > 0).then_some(total),
-                        Some(format!("下载 {}", kind_label)),
-                    );
-                },
-            )
+            // 只改实际下载用的地址；记录到设置里的仍是官方 URL，方便日后换前缀
+            let url = manifest::apply_github_mirror(&package.url, &self.settings.github_mirror());
+            download_verified(&url, &archive, package.sha256.as_deref(), move |progress| {
+                events::progress_download(
+                    &app_for_progress,
+                    kind_label.clone(),
+                    progress.current,
+                    (progress.total > 0).then_some(progress.total),
+                    Some(format!("下载 {}", kind_label)),
+                    progress.speed,
+                );
+            })
             .await?;
         }
 
@@ -312,6 +332,7 @@ impl ToolService {
                     url: package.url.clone(),
                     installed_at: Some(now),
                     path: target.display().to_string(),
+                    prefer_system: false,
                 },
             );
         })?;
@@ -329,12 +350,10 @@ impl ToolService {
         Ok(())
     }
 
-    /// 仅 launcher 用 uv 自管的 Python 是否就绪（不含系统 Python）
-    pub async fn managed_python_ready(&self) -> bool {
-        let Some(uv) = self.uv_command_exe() else {
-            return false;
-        };
-        let requirement = manifest::requirement(ToolKind::Python).unwrap();
+    /// uv 自管 Python 的解释器路径（不含系统 Python）；缺失或未安装时返回 None
+    pub async fn managed_python_path(&self) -> Option<PathBuf> {
+        let uv = self.uv_command_exe()?;
+        let requirement = manifest::requirement(ToolKind::Python).ok()?;
         let mut cmd = Sandbox::new(&self.paths, &self.settings).command(&uv);
         cmd.arg("python")
             .arg("find")
@@ -342,10 +361,21 @@ impl ToolService {
             .arg("--python-preference")
             .arg("only-managed")
             .arg(requirement.version);
-        match capture_output(cmd, "uv python find").await {
-            Ok(output) => output.status.success(),
-            Err(_) => false,
+        let output = capture_output(cmd, "uv python find").await.ok()?;
+        if !output.status.success() {
+            return None;
         }
+        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    }
+
+    /// 仅 launcher 用 uv 自管的 Python 是否就绪（不含系统 Python）
+    pub async fn managed_python_ready(&self) -> bool {
+        self.managed_python_path().await.is_some()
     }
 
     /// Python 是否可用：自管或系统已装均可
@@ -386,19 +416,22 @@ impl ToolService {
     }
 }
 
-fn set_tool_state(settings: &mut Settings, kind: ToolKind, state: ToolState) {
-    match kind {
-        ToolKind::Python => settings.python = state,
-        ToolKind::Uv => settings.uv = state,
-        ToolKind::Git => settings.git = state,
-        ToolKind::Pnpm => settings.pnpm = state,
-    }
+fn set_tool_state(settings: &mut Settings, kind: ToolKind, mut state: ToolState) {
+    let target = match kind {
+        ToolKind::Python => &mut settings.python,
+        ToolKind::Uv => &mut settings.uv,
+        ToolKind::Git => &mut settings.git,
+        ToolKind::Pnpm => &mut settings.pnpm,
+    };
+    // 安装/重装不改变用户选择的来源偏好
+    state.prefer_system = target.prefer_system;
+    *target = state;
 }
 
 /// 在系统 PATH 中查找可执行文件。
 /// Windows：必须带 PATHEXT 扩展名才算可执行（目录里可能有无用的裸名 bash shim）；
 /// 未命中时再补查 npm / uv 常见安装目录，兼容工具不在 GUI 会话 PATH 里的情况。
-fn which_in_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn which_in_path(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
@@ -508,6 +541,11 @@ fn system_python_info() -> Option<(PathBuf, String)> {
     };
     for name in stems {
         if let Some(exe) = which_in_path(name) {
+            // Microsoft Store 的 App Execution Alias（…\WindowsApps\python.exe）
+            // 能跑 --version，但 uv 检查它时会返回 invalid response 而失败，直接跳过。
+            if is_windows() && exe.to_string_lossy().contains(r"\WindowsApps\") {
+                continue;
+            }
             if let Some(version) = probe_version(&exe) {
                 return Some((exe, version));
             }
@@ -519,43 +557,67 @@ fn system_python_info() -> Option<(PathBuf, String)> {
 pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
     let settings = service.settings.snapshot();
 
-    // Python：uv 自管优先，其次系统 Python
+    // Python：默认自管优先，设置里选了“系统版本”则系统优先
     let python_path = service
-        .paths
-        .tool_dir(ToolKind::Python, &settings.tool_dirs)
+        .locate_dir(ToolKind::Python)
+        .unwrap_or_else(|| service.paths.tool_dir(ToolKind::Python, &settings.tool_dirs))
         .display()
         .to_string();
-    let python = if service.managed_python_ready().await {
+    // 虚拟环境里实际使用的解释器版本（真正跑 Bot 的那个）。记录值/manifest 可能和它对不上，
+    // 所以只要 venv 存在就以探测结果为准，保证界面显示的版本与实际一致。
+    let venv_version = if service.paths.env_python().is_file() {
+        probe_version(&service.paths.env_python())
+    } else {
+        None
+    };
+    let managed_python = service.managed_python_path().await;
+    let managed_version = managed_python.as_deref().and_then(probe_version);
+    let managed_ok = managed_python.is_some();
+    let system_python = system_python_info();
+    let system_ok = system_python.is_some();
+    let use_system_python = pick_system(settings.python.prefer_system, managed_ok, system_ok);
+    let python = if managed_ok && !use_system_python {
         ToolMeta {
-            version: if settings.python.version.is_empty() {
-                manifest::PYTHON_VERSION.to_string()
-            } else {
-                settings.python.version.clone()
-            },
+            version: managed_version.or(venv_version.clone()).unwrap_or_else(|| {
+                if settings.python.version.is_empty() {
+                    manifest::PYTHON_VERSION.to_string()
+                } else {
+                    settings.python.version.clone()
+                }
+            }),
             installed: true,
             source: ToolSource::Managed,
-            path: python_path,
+            path: python_path.clone(),
             installed_at: settings.python.installed_at.clone(),
+            managed_available: managed_ok,
+            system_available: system_ok,
         }
-    } else if let Some((_, version)) = system_python_info() {
+    } else if system_ok {
         ToolMeta {
-            version,
+            version: system_python
+                .map(|(_, version)| version)
+                .or_else(|| venv_version.clone())
+                .unwrap_or_default(),
             installed: true,
             source: ToolSource::System,
-            path: python_path,
+            path: python_path.clone(),
             installed_at: None,
+            managed_available: managed_ok,
+            system_available: system_ok,
         }
     } else {
         ToolMeta {
             version: settings.python.version.clone(),
             installed: false,
             source: ToolSource::Missing,
-            path: python_path,
+            path: python_path.clone(),
             installed_at: settings.python.installed_at.clone(),
+            managed_available: managed_ok,
+            system_available: system_ok,
         }
     };
 
-    // Git / uv / pnpm：自管目录存在即就绪，否则探测系统工具
+    // Git / uv / pnpm：默认自管优先，设置里选了“系统版本”则系统优先
     let tool = |kind: ToolKind| -> ToolMeta {
         let state = match kind {
             ToolKind::Python => unreachable!("python 单独处理"),
@@ -564,32 +626,39 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
             ToolKind::Pnpm => &settings.pnpm,
         };
         let path = service
-            .paths
-            .tool_dir(kind, &settings.tool_dirs)
+            .locate_dir(kind)
+            .unwrap_or_else(|| service.paths.tool_dir(kind, &settings.tool_dirs))
             .display()
             .to_string();
-        if let Some(exe) = service.managed_exe(kind) {
-            let version = if state.version.is_empty() {
-                probe_version(&exe).unwrap_or_default()
-            } else {
-                state.version.clone()
-            };
+        let managed = service.managed_exe(kind);
+        let managed_ok = managed.is_some();
+        let system_version = system_exe_path(kind).and_then(|exe| probe_version(&exe));
+        let system_ok = system_version.is_some();
+        let use_system = pick_system(state.prefer_system, managed_ok, system_ok);
+        if managed_ok && !use_system {
+            // 以实际探测到的版本为准，记录值只作为探测失败时的回退
+            let version = managed
+                .as_deref()
+                .and_then(probe_version)
+                .unwrap_or_else(|| state.version.clone());
             ToolMeta {
                 version,
                 installed: true,
                 source: ToolSource::Managed,
                 path,
                 installed_at: state.installed_at.clone(),
+                managed_available: managed_ok,
+                system_available: system_ok,
             }
-        } else if let Some(version) =
-            system_exe_path(kind).and_then(|exe| probe_version(&exe))
-        {
+        } else if let Some(version) = system_version {
             ToolMeta {
                 version,
                 installed: true,
                 source: ToolSource::System,
                 path,
                 installed_at: None,
+                managed_available: managed_ok,
+                system_available: system_ok,
             }
         } else {
             ToolMeta {
@@ -598,6 +667,8 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
                 source: ToolSource::Missing,
                 path,
                 installed_at: state.installed_at.clone(),
+                managed_available: managed_ok,
+                system_available: system_ok,
             }
         }
     };
@@ -608,6 +679,17 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
         git: tool(ToolKind::Git),
         pnpm: tool(ToolKind::Pnpm),
     }
+}
+
+/// 是否使用系统版本：系统存在，且（用户选了系统版本 或 没有自管副本）时才用系统。
+fn pick_system(prefer_system: bool, managed_ok: bool, system_ok: bool) -> bool {
+    system_ok && (prefer_system || !managed_ok)
+}
+
+fn dir_has_entries(path: &Path) -> bool {
+    std::fs::read_dir(path)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
 }
 
 fn clean_dir(path: &Path) -> Result<()> {
@@ -677,4 +759,23 @@ async fn capture_output(mut cmd: std::process::Command, label: &'static str) -> 
     tokio::task::spawn_blocking(move || cmd.output().with_context(|| format!("执行 {label} 失败")))
         .await
         .with_context(|| format!("{label} 任务失败"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_system;
+
+    #[test]
+    fn pick_system_logic() {
+        // 默认：自管优先，没有自管才用系统
+        assert!(!pick_system(false, true, true));
+        assert!(pick_system(false, false, true));
+        assert!(!pick_system(false, true, false));
+        assert!(!pick_system(false, false, false));
+        // 选了“系统版本”：系统优先，没有系统才回退自管
+        assert!(pick_system(true, true, true));
+        assert!(pick_system(true, false, true));
+        assert!(!pick_system(true, true, false));
+        assert!(!pick_system(true, false, false));
+    }
 }

@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Child;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -21,7 +21,6 @@ pub struct RuntimePaths {
     pub tools_uv: PathBuf,
     pub tools_git: PathBuf,
     pub tools_pnpm: PathBuf,
-    pub env: PathBuf,
     pub env_aurora: PathBuf,
     pub kernel: PathBuf,
     pub kernel_aurora: PathBuf,
@@ -31,37 +30,44 @@ pub struct RuntimePaths {
 
 impl RuntimePaths {
     pub fn default_user() -> Result<Self> {
-        // 便携模式：整套运行目录放在 exe 同级的 tool/ 下，随 exe 一起拷贝即迁移。
-        // 若 exe 位于只读/系统目录（例如 Linux 包管理器装到 /usr/bin），
-        // 同级不可写，则退回到用户数据目录，绝不为写盘而索取 root 权限。
+        // 默认把运行目录放在家目录下（三平台统一），避免 exe 装在只读/系统目录
+        // （例如 Linux 的 /usr/bin）时同级不可写。
+        // 只有 exe 同级**已经存在** tool/ 时才用它——即用户主动放置的便携目录。
         let exe_dir = std::env::current_exe()
             .context("无法定位当前可执行文件")?
             .parent()
             .context("可执行文件缺少父目录")?
             .to_path_buf();
         let portable_root = exe_dir.join("tool");
-        if dir_writable(&portable_root) {
+        if portable_root.exists() {
             return Ok(Self::from_root(portable_root));
         }
         let data_root = user_data_root()
-            .context("可执行文件目录不可写，且无法定位用户数据目录")?
+            .context("无法定位用户数据目录")?
             .join("tool");
         Ok(Self::from_root(data_root))
     }
 
     pub fn from_root(root: PathBuf) -> Self {
-        let state_dir = root.join("state");
-        let downloads = root.join("downloads");
-        let staging = root.join("staging");
-        let tools = root.join("tools");
+        // 按用途分块：runtime（运行必需）/ data（用户数据）/ cache（可删缓存）/ logs
+        let runtime = root.join("runtime");
+        let tools = runtime.join("tools");
         let tools_python = tools.join("python");
         let tools_uv = tools.join("uv");
         let tools_git = tools.join("git");
         let tools_pnpm = tools.join("pnpm");
-        let env = root.join("env");
-        let env_aurora = env.join("aurora");
-        let kernel = root.join("kernel");
+        let env_aurora = runtime.join("venv");
+        let kernel = runtime.join("kernel");
         let kernel_aurora = kernel.join("auroraBot");
+
+        let data = root.join("data");
+        let state_dir = data.join("state");
+        let home = data.join("home");
+
+        let cache = root.join("cache");
+        let downloads = cache.join("downloads");
+        let staging = cache.join("staging");
+
         Self {
             root: root.clone(),
             state_dir,
@@ -72,11 +78,10 @@ impl RuntimePaths {
             tools_uv,
             tools_git,
             tools_pnpm,
-            env,
             env_aurora,
             kernel,
             kernel_aurora,
-            home: root.join("home"),
+            home,
             logs: root.join("logs"),
         }
     }
@@ -88,6 +93,9 @@ impl RuntimePaths {
         let home_temp = self.home.join("temp");
         let home_appdata_roaming = self.home.join("AppData").join("Roaming");
         let home_appdata_local = self.home.join("AppData").join("Local");
+
+        self.migrate_layout();
+
         for dir in [
             &self.root,
             &self.state_dir,
@@ -98,7 +106,7 @@ impl RuntimePaths {
             &self.tools_uv,
             &self.tools_git,
             &self.tools_pnpm,
-            &self.env,
+            &self.env_aurora,
             &self.kernel,
             &self.home,
             &self.logs,
@@ -110,6 +118,37 @@ impl RuntimePaths {
                 .with_context(|| format!("创建运行时目录失败: {}", dir.display()))?;
         }
         Ok(())
+    }
+
+    /// 把旧的平铺布局迁移到 `runtime/ + data/ + cache/` 分块布局。
+    /// 同盘改名很快；失败（目录被占用等）就跳过，不阻塞启动。
+    fn migrate_layout(&self) {
+        let moves: [(PathBuf, PathBuf); 5] = [
+            (self.root.join("tools"), self.tools.clone()),
+            (self.root.join("kernel"), self.kernel.clone()),
+            (self.root.join("home"), self.home.clone()),
+            (self.root.join("state"), self.state_dir.clone()),
+            (self.root.join("env").join("aurora"), self.env_aurora.clone()),
+        ];
+        for (old, new) in moves {
+            if old.exists() && !new.exists() {
+                if let Some(parent) = new.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::rename(&old, &new);
+            }
+        }
+        // 更早的布局把 downloads/staging 直接放在根下
+        let cache = self.root.join("cache");
+        for (old_name, new_path) in [("downloads", &self.downloads), ("staging", &self.staging)] {
+            let old_path = self.root.join(old_name);
+            if old_path.exists() && !new_path.exists() {
+                let _ = std::fs::create_dir_all(&cache);
+                let _ = std::fs::rename(&old_path, new_path);
+            }
+        }
+        // 清掉迁移后残留的空目录（非空时 remove_dir 会失败，忽略即可）
+        let _ = std::fs::remove_dir(self.root.join("env"));
     }
 
     pub fn settings_file(&self) -> PathBuf {
@@ -161,6 +200,18 @@ impl RuntimePaths {
         }
     }
 
+    /// 虚拟环境的标记文件，uv/CPython 靠它识别这是一个 venv。
+    pub fn env_cfg(&self) -> PathBuf {
+        self.env_aurora.join("pyvenv.cfg")
+    }
+
+    /// 虚拟环境是否完整可用。仅凭 python.exe 存在不足以判定：venv 创建被中断时
+    /// 会留下只有 python.exe、没有 pyvenv.cfg 的残壳，此时 uv 会以
+    /// “No pyvenv.cfg file” 直接失败，必须识别出来并重建。
+    pub fn venv_ready(&self) -> bool {
+        self.env_python().is_file() && self.env_cfg().is_file()
+    }
+
     pub fn env_scripts(&self) -> PathBuf {
         if is_windows() {
             self.env_aurora.join("Scripts")
@@ -191,29 +242,6 @@ fn user_data_root() -> Option<PathBuf> {
     BaseDirs::new().map(|dirs| dirs.home_dir().join(".aurora-launcher"))
 }
 
-/// 判断目录可创建且可写。用临时文件探测，兼容属主非当前用户但仍有写权限的情况。
-fn dir_writable(dir: &Path) -> bool {
-    if dir.exists() {
-        return probe_writable(dir);
-    }
-    // 目录尚不存在：先确认父目录可写，再尝试创建。
-    match dir.parent() {
-        Some(parent) if probe_writable(parent) => std::fs::create_dir_all(dir).is_ok(),
-        _ => false,
-    }
-}
-
-fn probe_writable(dir: &Path) -> bool {
-    let probe = dir.join(".aurora-write-probe");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolState {
     #[serde(default)]
@@ -227,6 +255,9 @@ pub struct ToolState {
     /// 上次成功安装到的目录（用于换路径重装时清理旧副本）。
     #[serde(default)]
     pub path: String,
+    /// 是否优先使用系统 PATH 上的版本（false = 优先启动器自管副本）。
+    #[serde(default)]
+    pub prefer_system: bool,
 }
 
 /// 每个工具的自定义安装目录覆盖；空字符串表示用默认目录。
@@ -274,6 +305,17 @@ pub struct Settings {
     pub aurora_remote: String,
     #[serde(default = "default_branch")]
     pub aurora_branch: String,
+    /// 包下载源：`mirror`（默认，国内 PyPI 镜像）或 `official`。
+    #[serde(default = "default_download_source")]
+    pub download_source: String,
+    /// GitHub 加速前缀（如 `https://ghproxy.net/`）：非空时工具安装包与 Python
+    /// 解释器都改从它下载；留空 = 直连 github.com。只影响 GitHub，不影响 PyPI。
+    #[serde(default)]
+    pub github_mirror: String,
+}
+
+fn default_download_source() -> String {
+    "mirror".into()
 }
 
 fn default_remote() -> String {
@@ -294,6 +336,8 @@ impl Default for Settings {
             tool_dirs: ToolDirOverrides::default(),
             aurora_remote: default_remote(),
             aurora_branch: default_branch(),
+            download_source: default_download_source(),
+            github_mirror: String::new(),
         }
     }
 }
@@ -319,14 +363,39 @@ impl SettingsStore {
         self.inner.lock().unwrap().clone()
     }
 
+    /// 包下载源：`mirror`（国内镜像）或 `official`。
+    pub fn download_source(&self) -> String {
+        self.inner.lock().unwrap().download_source.clone()
+    }
+
+    /// GitHub 加速前缀；空字符串表示直连 github.com。
+    pub fn github_mirror(&self) -> String {
+        self.inner.lock().unwrap().github_mirror.trim().to_string()
+    }
+
+    /// 该工具是否优先使用系统 PATH 上的版本（默认 false = 优先启动器自管副本）。
+    pub fn tool_prefers_system(&self, kind: ToolKind) -> bool {
+        let settings = self.inner.lock().unwrap();
+        match kind {
+            ToolKind::Python => settings.python.prefer_system,
+            ToolKind::Uv => settings.uv.prefer_system,
+            ToolKind::Git => settings.git.prefer_system,
+            ToolKind::Pnpm => settings.pnpm.prefer_system,
+        }
+    }
+
     pub fn update(&self, f: impl FnOnce(&mut Settings)) -> Result<()> {
-        let mut settings = self.inner.lock().unwrap();
-        f(&mut settings);
+        let mut guard = self.inner.lock().unwrap();
+        // 先在副本上改，写盘成功后再替换内存：否则写盘失败时内存已改、磁盘没改，
+        // 二者不一致，下次启动会悄悄回滚成旧值。
+        let mut next = guard.clone();
+        f(&mut next);
         let parent = self.path.parent().context("settings.json 缺少父目录")?;
         std::fs::create_dir_all(parent)?;
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&*settings)?)?;
+        std::fs::write(&tmp, serde_json::to_string_pretty(&next)?)?;
         std::fs::rename(&tmp, &self.path)?;
+        *guard = next;
         Ok(())
     }
 }
@@ -349,6 +418,11 @@ pub struct ToolMeta {
     /// 该工具当前使用的安装目录（自定义路径或默认目录）。
     pub path: String,
     pub installed_at: Option<String>,
+    /// 是否同时存在启动器副本与系统版本（供界面切换来源）。
+    #[serde(default)]
+    pub managed_available: bool,
+    #[serde(default)]
+    pub system_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +472,8 @@ pub struct BotRecord {
     pub pid: u32,
     pub started_at: String,
     pub log_file: PathBuf,
+    /// Bot 的 stdin，用来把「对话」页的输入写进去。
+    pub stdin: Mutex<Option<std::process::ChildStdin>>,
 }
 
 pub struct BotRegistry {
@@ -428,6 +504,23 @@ impl BotRegistry {
             started_at: record.started_at.clone(),
             log_file: Some(record.log_file.clone()),
         })
+    }
+
+    /// 往 Bot 的 stdin 写入一行输入（对话）。
+    pub fn send_input(&self, text: &str) -> anyhow::Result<()> {
+        use anyhow::{anyhow, Context};
+        use std::io::Write;
+
+        let mut guard = self.inner.lock().unwrap();
+        let record = guard.as_mut().ok_or_else(|| anyhow!("AuroraBot 未运行"))?;
+        let stdin = record.stdin.get_mut().unwrap();
+        let stdin = stdin
+            .as_mut()
+            .ok_or_else(|| anyhow!("当前 Bot 不是对话模式，请重启 Bot"))?;
+        stdin.write_all(text.as_bytes()).context("写入 Bot 输入失败")?;
+        stdin.write_all(b"\n").context("写入 Bot 输入失败")?;
+        stdin.flush().context("刷新 Bot 输入失败")?;
+        Ok(())
     }
 
     pub fn stop(&self) -> Option<AuroraProcessInfo> {
