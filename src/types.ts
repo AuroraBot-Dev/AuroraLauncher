@@ -87,6 +87,8 @@ export interface AppEntry {
 }
 
 export interface LauncherConfig {
+  /// 内核是否已初始化（`config/` 已由 setup 生成）；只下载核心时为 false
+  initialized: boolean
   env: EnvEntry[]
   apps: AppEntry[]
 }

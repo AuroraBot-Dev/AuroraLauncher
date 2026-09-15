@@ -20,6 +20,9 @@
     <n-alert v-if="!kernelReady" type="warning" :bordered="false">
       内核尚未下载，暂无配置可编辑。请先在「内核」页下载核心。
     </n-alert>
+    <n-alert v-else-if="!configReady" type="warning" :bordered="false">
+      内核已下载但尚未初始化，配置文件还没生成。请先在「内核」页点「初始化」。
+    </n-alert>
 
     <template v-else>
       <n-card size="small" title="密钥">
@@ -90,6 +93,8 @@ const appStore = useAppStore()
 const message = useMessage()
 
 const kernelReady = computed(() => appStore.kernelStatus.exists)
+// 内核已 clone 但没跑过 setup 时配置文件还不存在，配置项会读成空
+const configReady = computed(() => appStore.launcherConfig?.initialized ?? false)
 const envEntries = computed(() => appStore.launcherConfig?.env ?? [])
 const apps = computed(() => appStore.launcherConfig?.apps ?? [])
 

@@ -508,6 +508,7 @@ export const useAppStore = defineStore('app', () => {
   async function loadLauncherConfig(): Promise<void> {
     if (!withReadyMode()) {
       launcherConfig.value = {
+        initialized: true,
         env: [
           { name: 'DEEPSEEK_API_KEY', value: '', secret: true },
           { name: 'AURORA_QQ_TOKEN', value: '', secret: true }

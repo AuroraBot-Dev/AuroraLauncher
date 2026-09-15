@@ -26,6 +26,10 @@ pub struct AppEntry {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LauncherConfig {
+    /// 内核是否已初始化：`config/` 由 `setup` 从 `config.example` 生成。
+    /// 只 clone 过、没跑过 setup 时这些文件还不存在（内核仓库里 `config/` 与 `.env`
+    /// 都被 Git 忽略），此时界面应提示先初始化，而不是显示“无需填写的密钥”。
+    pub initialized: bool,
     pub env: Vec<EnvEntry>,
     pub apps: Vec<AppEntry>,
 }
@@ -191,6 +195,7 @@ pub fn read_launcher_config(state: State<'_, AppState>) -> Result<LauncherConfig
         .collect();
 
     Ok(LauncherConfig {
+        initialized: apps_path(root).is_file(),
         env,
         apps: read_apps(root),
     })
