@@ -66,8 +66,14 @@ jobs:
               -F prerelease=false \
               --jq .id)"
           fi
+          # 拿不到 id 就直接失败：否则 publish-tauri 里的 releaseId 会是空字符串，
+          # tauri-action 会退回去自己按 tag 找/建 Release（历史问题就是这么来的）。
+          if [ -z "$ID" ]; then
+            echo "::error::未能创建或获取 Release（tag=$TAG），release_id 为空"
+            exit 1
+          fi
           echo "release_id=$ID" >> "$GITHUB_OUTPUT"
-          echo "复用 Release $TAG (id=$ID)"
+          echo "Release $TAG 就绪 (id=$ID)"
 
   publish-tauri:
     needs: create-release
@@ -127,6 +133,10 @@ jobs:
       # 生成 updater 产物与 latest.json，最后把资产上传到 create-release 建好的
       # Release。显式传 releaseId 避免各平台按 tag 查找时各自创建 Release；
       # 同时传 tagName，让 latest.json 里的下载地址指向该 tag 而非 releases/latest。
+      #
+      # releaseName/releaseBody 必须保留：tauri-action 只有在 releaseId 为空时才会
+      # 按 tag 去找/建 Release，而那时若没有 releaseName，它会直接抛
+      # “Release not found or created.”（v0.3.0 发版就是这么失败的）。留着它作为兜底。
       - name: Build and publish
         uses: tauri-apps/tauri-action@v1
         env:
@@ -136,6 +146,8 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ needs.create-release.outputs.release_tag }}
+          releaseName: 'AuroraLauncher ${{ needs.create-release.outputs.release_tag }}'
+          releaseBody: 'AuroraLauncher ${{ needs.create-release.outputs.release_tag }} 已发布。下载对应平台安装包即可，应用内“检查更新”亦可自动升级。'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
