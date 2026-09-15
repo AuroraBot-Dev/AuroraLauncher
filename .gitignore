@@ -114,6 +114,8 @@ src-tauri/target/
 src-tauri/target-clean/
 src-tauri/gen/
 src-tauri/.tauri/
+# quick-package.ps1 的输出目录（里面是编译好的 exe，不要提交）
+out-quick/
 src-tauri/icons/*.icns
 src-tauri/icons/*.ico
 src-tauri/icons/*.png
