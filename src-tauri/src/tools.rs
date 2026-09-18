@@ -554,6 +554,52 @@ fn system_python_info() -> Option<(PathBuf, String)> {
     None
 }
 
+/// 从 venv 的 `pyvenv.cfg` 推断它当初由哪个来源创建（`managed` / `system`）。
+///
+/// 旧版本没有记录 `venv_source` 时用它补上：`pyvenv.cfg` 的 `home` 指向基础解释器目录，
+/// 落在启动器自管的 Python 目录里就是 `managed`，否则是 `system`。
+/// 推断不出来（文件缺失、没有 `home` 字段等）返回 `None`，此时既不提示也不重建。
+pub fn infer_venv_source(service: &ToolService) -> Option<&'static str> {
+    let text = std::fs::read_to_string(service.paths.env_cfg()).ok()?;
+    let home = text.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "home").then(|| value.trim().to_string())
+    })?;
+    let overrides = service.settings.snapshot().tool_dirs;
+    let managed = service.paths.tool_dir(ToolKind::Python, &overrides);
+    // Windows 路径大小写不敏感，统一小写 + 反斜杠再比前缀
+    let normalize = |path: &str| path.replace('/', "\\").to_ascii_lowercase();
+    let managed = normalize(&managed.to_string_lossy());
+    let home = normalize(&home);
+    Some(if home.starts_with(&managed) {
+        "managed"
+    } else {
+        "system"
+    })
+}
+
+/// venv 实际使用的 Python 来源：优先用设置里的记录值，旧版本没记录时从 `pyvenv.cfg` 推断。
+pub fn venv_source(service: &ToolService) -> Option<String> {
+    let recorded = service.settings.snapshot().venv_source.trim().to_string();
+    if !recorded.is_empty() {
+        return Some(recorded);
+    }
+    infer_venv_source(service).map(str::to_string)
+}
+
+/// 当前设置下 Python 应该来自哪个来源（`managed` / `system`）。
+/// 必须与 `bot.rs::setup` 建 venv 时的分支判定保持一致，否则会误判“需要重建”。
+pub async fn python_source(service: &ToolService) -> &'static str {
+    let prefer_system = service.settings.tool_prefers_system(ToolKind::Python);
+    let system_ok = service.system_python().is_some();
+    let managed_ok = service.managed_python_ready().await;
+    if (prefer_system && system_ok) || !managed_ok {
+        "system"
+    } else {
+        "managed"
+    }
+}
+
 pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
     let settings = service.settings.snapshot();
 
@@ -673,8 +719,14 @@ pub async fn dependency_status(service: &ToolService) -> DependencyStatus {
         }
     };
 
+    // 来源不一致只做提示，重建由用户点「初始化」触发（见 bot.rs::setup 的 rebuild_stale_venv）
+    let desired_source = python_source(service).await;
+    let python_venv_stale = service.paths.venv_ready()
+        && venv_source(service).is_some_and(|recorded| recorded != desired_source);
+
     DependencyStatus {
         python,
+        python_venv_stale,
         uv: tool(ToolKind::Uv),
         git: tool(ToolKind::Git),
         pnpm: tool(ToolKind::Pnpm),

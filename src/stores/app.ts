@@ -27,6 +27,7 @@ export interface DemoStep {
 
 const defaultDependencies = (): DependencyStatus => ({
   python: { version: '', installed: false, source: 'missing', path: '' },
+  pythonVenvStale: false,
   uv: { version: '', installed: false, source: 'missing', path: '' },
   git: { version: '', installed: false, source: 'missing', path: '' },
   pnpm: { version: '', installed: false, source: 'missing', path: '' }

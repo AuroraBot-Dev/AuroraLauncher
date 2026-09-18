@@ -312,6 +312,11 @@ pub struct Settings {
     /// 解释器都改从它下载；留空 = 直连 github.com。只影响 GitHub，不影响 PyPI。
     #[serde(default)]
     pub github_mirror: String,
+    /// 创建 venv 时用的 Python 来源（`managed` / `system`）。
+    /// 切换来源不会重建 venv，所以用它判断「当前选择」与「venv 实际来源」是否一致；
+    /// 为空表示旧版本记录（视为未知，不触发重建）。
+    #[serde(default)]
+    pub venv_source: String,
 }
 
 fn default_download_source() -> String {
@@ -338,6 +343,7 @@ impl Default for Settings {
             aurora_branch: default_branch(),
             download_source: default_download_source(),
             github_mirror: String::new(),
+            venv_source: String::new(),
         }
     }
 }
@@ -429,6 +435,9 @@ pub struct ToolMeta {
 #[serde(rename_all = "camelCase")]
 pub struct DependencyStatus {
     pub python: ToolMeta,
+    /// venv 的来源与当前选中的 Python 来源不一致：需要重新初始化才会生效
+    #[serde(default)]
+    pub python_venv_stale: bool,
     pub uv: ToolMeta,
     pub git: ToolMeta,
     pub pnpm: ToolMeta,

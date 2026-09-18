@@ -154,8 +154,9 @@ pub async fn run_setup(app: AppHandle, state: State<'_, AppState>) -> Result<(),
     }
     // setup 会安装工具、同步依赖，和「安装依赖」共用互斥，避免并发写同一工具目录
     acquire_install(&app_state)?;
+    // 这里是用户明确点的「初始化」：如果 venv 的来源与当前选择不一致，就按当前来源重建
     let result = service
-        .setup(&app)
+        .setup(&app, true)
         .await
         .map_err(|error| format!("{error:#}"));
     app_state.installing.store(false, Ordering::Release);

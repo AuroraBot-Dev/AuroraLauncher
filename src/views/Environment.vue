@@ -40,6 +40,9 @@
           <n-text class="path-line" depth="3">
             {{ card.path || '—' }}
           </n-text>
+          <n-text v-if="card.stale" type="warning" style="font-size: 12px">
+            虚拟环境与当前来源不一致，重新初始化后生效
+          </n-text>
 
           <n-flex justify="end" :size="8" :wrap="false">
             <n-button v-if="card.installed" size="small" @click="appStore.openToolDir(card.key)">
@@ -132,6 +135,8 @@ interface DependencyCard {
   installedAt?: string
   managedAvailable: boolean
   systemAvailable: boolean
+  /// 仅 Python 用：虚拟环境的来源与当前选中的来源不一致
+  stale?: boolean
 }
 
 const dependencyCards = computed<DependencyCard[]>(() => [
@@ -166,7 +171,8 @@ const dependencyCards = computed<DependencyCard[]>(() => [
     path: appStore.dependencyStatus.python.path,
     installedAt: appStore.dependencyStatus.python.installedAt,
     managedAvailable: appStore.dependencyStatus.python.managedAvailable ?? false,
-    systemAvailable: appStore.dependencyStatus.python.systemAvailable ?? false
+    systemAvailable: appStore.dependencyStatus.python.systemAvailable ?? false,
+    stale: appStore.dependencyStatus.pythonVenvStale
   },
   {
     key: 'pnpm',

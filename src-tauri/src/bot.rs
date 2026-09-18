@@ -82,7 +82,9 @@ impl BotService {
 
     /// 初始化内核：确保工具 → 克隆内核（含子模块）→ 拷 `config`/`.env` → 建 venv → `uv sync`。
     /// 等价内核的 `aurora setup`，但**跳过 docs/panel 两个前端的 pnpm 依赖**（跑 Bot 用不到）。
-    pub async fn setup(&self, app: &AppHandle) -> Result<()> {
+    /// `rebuild_stale_venv`：venv 的来源与当前选择不一致时是否重建。
+    /// 启动路径传 false（重建是重操作，不该让启动莫名变慢），「初始化」传 true。
+    pub async fn setup(&self, app: &AppHandle, rebuild_stale_venv: bool) -> Result<()> {
         events::log(
             app,
             "info",
@@ -118,15 +120,38 @@ impl BotService {
         copy_template_if_missing(&root.join("config.example"), &root.join("config"))?;
         copy_file_if_missing(&root.join(".env.example"), &root.join(".env"))?;
 
-        if !self.paths.venv_ready() {
-            // 创建中断会留下缺少 pyvenv.cfg 的残壳，必须先清掉再重建，否则 uv 会报
-            // “No pyvenv.cfg file” 而无法同步依赖。
-            if self.paths.env_aurora.exists() {
+        // venv 只建一次，切换 Python 来源不会重建它，于是出现「设置说 A、实际跑 B」。
+        // 是否重建由调用方决定：启动不重建（避免启动莫名变慢），「初始化」才重建。
+        let desired_source = crate::tools::python_source(&tools).await;
+        let venv_actual = crate::tools::venv_source(&tools);
+        let stale = rebuild_stale_venv
+            && self.paths.venv_ready()
+            && venv_actual
+                .as_deref()
+                .is_some_and(|recorded| recorded != desired_source);
+
+        if !self.paths.venv_ready() || stale {
+            if stale {
                 events::log(
                     app,
                     "warn",
-                    "检测到不完整的 Python 虚拟环境，正在清理并重建",
+                    format!(
+                        "虚拟环境是用「{}」创建的，当前选择的是「{}」，正在按当前来源重建",
+                        source_label(venv_actual.as_deref().unwrap_or("")),
+                        source_label(desired_source)
+                    ),
                 );
+            }
+            // 创建中断会留下缺少 pyvenv.cfg 的残壳，必须先清掉再重建，否则 uv 会报
+            // “No pyvenv.cfg file” 而无法同步依赖。
+            if self.paths.env_aurora.exists() {
+                if !stale {
+                    events::log(
+                        app,
+                        "warn",
+                        "检测到不完整的 Python 虚拟环境，正在清理并重建",
+                    );
+                }
                 // 先改名再删除：目录被占用时改名会直接失败，这样不会留下删了一半的残壳。
                 let broken = self.paths.env_aurora.with_extension("broken");
                 let _ = std::fs::remove_dir_all(&broken);
@@ -163,6 +188,9 @@ impl BotService {
             venv.arg(&self.paths.env_aurora);
             let output = capture_output(venv, "uv venv").await?;
             ensure_success(output, "uv venv")?;
+            // 记录来源，供下次启动判断是否需要按新来源重建
+            self.settings
+                .update(|settings| settings.venv_source = desired_source.to_string())?;
         }
 
         events::log(app, "info", "同步 AuroraBot Python 依赖");
@@ -183,7 +211,8 @@ impl BotService {
 
     /// 启动前准备：初始化内核 + 配置体检（只提示，不阻塞启动）。
     pub async fn prepare(&self, app: &AppHandle) -> Result<()> {
-        self.setup(app).await?;
+        // 启动路径：不因来源不一致重建 venv，只提示（界面显示 pythonVenvStale）
+        self.setup(app, false).await?;
         // 配置只是从模板复制来的：如果没填密钥/没启用平台，Bot 起来也连不上任何东西。
         for warning in config_warnings(&self.paths.kernel_aurora) {
             events::log(app, "warn", warning);
@@ -330,6 +359,15 @@ fn copy_tree(source: &Path, target: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 把 venv 来源标识（`managed` / `system`）转成界面与日志用的中文。
+fn source_label(source: &str) -> &str {
+    match source {
+        "managed" => "启动器副本",
+        "system" => "系统版本",
+        other => other,
+    }
 }
 
 /// 启动前的配置体检：`.env` 是否有密钥、`config/apps.toml` 是否启用了平台。

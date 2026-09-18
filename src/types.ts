@@ -12,6 +12,8 @@ export interface ToolMeta {
 
 export interface DependencyStatus {
   python: ToolMeta
+  /// venv 的来源与当前选中的 Python 来源不一致：需要重新初始化才会生效
+  pythonVenvStale: boolean
   uv: ToolMeta
   git: ToolMeta
   pnpm: ToolMeta
