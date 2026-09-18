@@ -63,6 +63,7 @@ import {
   NSpace,
   NTag,
   NText,
+  useDialog,
   useMessage
 } from 'naive-ui'
 import { useAppStore } from '../stores/app'
@@ -70,6 +71,7 @@ import TaskProgress from '../components/TaskProgress.vue'
 
 const appStore = useAppStore()
 const message = useMessage()
+const dialog = useDialog()
 
 // 本页只显示内核相关进度：克隆/更新（clone/update）与依赖同步（sync）；
 // 工具安装的进度在「运行环境」页。
@@ -97,7 +99,26 @@ async function updateKernel() {
   }
 }
 
+/// 初始化会在「虚拟环境来源与当前选择不一致」时重建 venv——那是几分钟的重操作
+/// （要重新安装依赖），所以先弹框说清楚再让用户决定，而不是悄悄卡住。
+function confirmVenvRebuild(): Promise<boolean> {
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: '将重建虚拟环境',
+      content:
+        '当前虚拟环境与所选的 Python 来源不一致，初始化会按当前来源重建它。工具和内核源码不受影响；venv 里的依赖会从本地缓存重新装入（通常不需要联网下载）。是否继续？',
+      positiveText: '继续初始化',
+      negativeText: '取消',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false)
+    })
+  })
+}
+
 async function initKernel() {
+  if (appStore.dependencyStatus.pythonVenvStale && !(await confirmVenvRebuild())) return
   try {
     await appStore.runSetup()
     message.success('内核初始化完成')
