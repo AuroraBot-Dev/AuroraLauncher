@@ -73,6 +73,8 @@ export interface RuntimeInfo {
   root: string
   downloadSource: string
   githubMirror: string
+  /// 用户手动缩放倍率（Ctrl+滚轮 / Ctrl+加减 调整）
+  userZoom: number
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system'

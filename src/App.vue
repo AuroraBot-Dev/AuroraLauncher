@@ -17,6 +17,7 @@
           </n-layout>
         </n-layout>
         <UpdateDialog />
+        <div v-if="appStore.zoomHint" class="zoom-hint">{{ appStore.zoomHint }}</div>
       </n-dialog-provider>
     </n-message-provider>
   </n-config-provider>
@@ -51,3 +52,18 @@ onMounted(() => {
   appStore.scheduleAutoCheck()
 })
 </script>
+
+<style scoped>
+.zoom-hint {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9999;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 12px;
+  pointer-events: none;
+}
+</style>

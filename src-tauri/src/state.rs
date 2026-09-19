@@ -339,6 +339,13 @@ pub struct Settings {
     /// 为空表示旧版本记录（视为未知，不触发重建）。
     #[serde(default)]
     pub venv_source: String,
+    /// 用户手动缩放倍率（Ctrl+滚轮 / Ctrl+加减），叠加在「按窗口宽度自动放大」之上。
+    #[serde(default = "default_user_zoom")]
+    pub user_zoom: f64,
+}
+
+fn default_user_zoom() -> f64 {
+    1.0
 }
 
 fn default_download_source() -> String {
@@ -366,6 +373,7 @@ impl Default for Settings {
             download_source: default_download_source(),
             github_mirror: String::new(),
             venv_source: String::new(),
+            user_zoom: default_user_zoom(),
         }
     }
 }
@@ -425,6 +433,41 @@ impl SettingsStore {
         std::fs::rename(&tmp, &self.path)?;
         *guard = next;
         Ok(())
+    }
+
+    /// 布局迁移后，把记录里指向旧 `tool/<kind>` 的安装路径改写到 `runtime/tools/<kind>`。
+    /// 旧记录会让「重装」去清理已经不存在的老目录，这里纠正一次并落盘。
+    pub fn migrate_tool_paths(&self, paths: &RuntimePaths) {
+        let old_tools = paths.root.join("tools");
+        let needs = {
+            let guard = self.inner.lock().unwrap();
+            [&guard.python, &guard.uv, &guard.git, &guard.pnpm]
+                .iter()
+                .any(|state| {
+                    let raw = state.path.trim();
+                    !raw.is_empty() && PathBuf::from(raw).starts_with(&old_tools)
+                })
+        };
+        if !needs {
+            return;
+        }
+        let new_tools = paths.tools.clone();
+        let _ = self.update(|settings| {
+            for state in [
+                &mut settings.python,
+                &mut settings.uv,
+                &mut settings.git,
+                &mut settings.pnpm,
+            ] {
+                let raw = state.path.trim().to_string();
+                if raw.is_empty() {
+                    continue;
+                }
+                if let Ok(rest) = PathBuf::from(&raw).strip_prefix(&old_tools) {
+                    state.path = new_tools.join(rest).display().to_string();
+                }
+            }
+        });
     }
 }
 
@@ -581,6 +624,8 @@ impl AppState {
     pub fn new(paths: RuntimePaths) -> Result<Self> {
         paths.ensure_dirs()?;
         let settings = SettingsStore::load(paths.settings_file());
+        // 旧平铺布局迁移到 runtime/ 后，纠正记录里遗留的旧工具路径
+        settings.migrate_tool_paths(&paths);
         Ok(Self {
             paths: Arc::new(paths),
             settings: Arc::new(settings),

@@ -223,6 +223,8 @@ pub struct RuntimeInfo {
     pub root: String,
     pub download_source: String,
     pub github_mirror: String,
+    /// 用户手动缩放倍率（叠加在窗口自适应缩放之上）。
+    pub user_zoom: f64,
 }
 
 /// 关于页展示用的运行环境信息（系统、架构、运行时目录）。
@@ -234,7 +236,25 @@ pub fn runtime_info(state: State<'_, AppState>) -> RuntimeInfo {
         root: state.inner().paths.root.display().to_string(),
         download_source: state.inner().settings.download_source(),
         github_mirror: state.inner().settings.github_mirror(),
+        user_zoom: state.inner().settings.snapshot().user_zoom,
     }
+}
+
+/// 设置用户手动缩放倍率（Ctrl+滚轮 / Ctrl+加减），持久化并立即应用。
+/// 返回实际生效的倍率（已夹到允许范围）。
+#[tauri::command]
+pub async fn set_user_zoom(
+    factor: f64,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<f64, String> {
+    let clamped = factor.clamp(crate::MIN_USER_ZOOM, crate::MAX_USER_ZOOM);
+    state
+        .settings
+        .update(|settings| settings.user_zoom = clamped)
+        .map_err(|error| format!("{error:#}"))?;
+    crate::sync_zoom(&app, "main");
+    Ok(clamped)
 }
 
 /// 用系统默认浏览器打开外部链接；仅允许 http/https，避免被当作本地命令执行。

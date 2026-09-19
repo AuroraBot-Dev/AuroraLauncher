@@ -87,7 +87,10 @@ export const useAppStore = defineStore('app', () => {
   const loadingConfig = ref(false)
   const downloadSource = computed(() => runtimeInfo.value?.downloadSource ?? 'mirror')
   const githubMirror = computed(() => runtimeInfo.value?.githubMirror ?? '')
+  const userZoom = computed(() => runtimeInfo.value?.userZoom ?? 1)
   const chatLines = ref<ChatLine[]>([])
+  /// 手动缩放时短暂显示的提示（如「缩放 110%」），空串表示不显示
+  const zoomHint = ref('')
 
   function addLog(level: LogLine['level'], message: string) {
     logs.value.push({
@@ -625,6 +628,55 @@ export const useAppStore = defineStore('app', () => {
     localStorage.setItem('aurora-auto-update', enabled ? '1' : '0')
   }
 
+  /// 设置手动缩放倍率；后端会持久化并立即应用，返回夹取后的实际值。
+  async function setUserZoom(factor: number): Promise<void> {
+    if (!withReadyMode()) return
+    try {
+      const applied = await invoke<number>('set_user_zoom', { factor })
+      if (runtimeInfo.value) runtimeInfo.value.userZoom = applied
+      showZoomHint(applied)
+    } catch (e: any) {
+      addLog('error', `调整缩放失败: ${e?.message || e}`)
+    }
+  }
+
+  let zoomHintTimer = 0
+  function showZoomHint(factor: number) {
+    zoomHint.value = `缩放 ${Math.round(factor * 100)}%`
+    window.clearTimeout(zoomHintTimer)
+    zoomHintTimer = window.setTimeout(() => {
+      zoomHint.value = ''
+    }, 900)
+  }
+
+  /// Ctrl+滚轮 / Ctrl+加减 手动缩放，Ctrl+0 复位（叠加在窗口自适应缩放之上）。
+  function setupZoomShortcuts() {
+    const step = 0.05
+    const current = () => runtimeInfo.value?.userZoom ?? 1
+    window.addEventListener(
+      'wheel',
+      (event) => {
+        if (!event.ctrlKey) return
+        event.preventDefault()
+        setUserZoom(current() + (event.deltaY < 0 ? step : -step))
+      },
+      { passive: false }
+    )
+    window.addEventListener('keydown', (event) => {
+      if (!event.ctrlKey) return
+      if (event.key === '=' || event.key === '+') {
+        event.preventDefault()
+        setUserZoom(current() + step)
+      } else if (event.key === '-' || event.key === '_') {
+        event.preventDefault()
+        setUserZoom(current() - step)
+      } else if (event.key === '0') {
+        event.preventDefault()
+        setUserZoom(1)
+      }
+    })
+  }
+
   /// 手动检查更新：发现新版本时打开全局更新弹窗，否则返回 null。
   async function requestUpdateCheck(): Promise<LauncherUpdate | null> {
     if (checkingUpdate.value || isBusy.value) return null
@@ -673,6 +725,7 @@ export const useAppStore = defineStore('app', () => {
     listenersInitialized = true
     detectMode()
     if (!isTauriRuntime()) return
+    setupZoomShortcuts()
     await listen<ProgressEvent>('progress', (event: Event<ProgressEvent>) => {
       const payload = event.payload
       // 后端用 {current:0, total:null, label:null} 表示“清除进度”；
@@ -727,6 +780,9 @@ export const useAppStore = defineStore('app', () => {
     setDownloadSource,
     githubMirror,
     setGithubMirror,
+    userZoom,
+    zoomHint,
+    setUserZoom,
     runSetup,
     chatLines,
     sendChatInput,
