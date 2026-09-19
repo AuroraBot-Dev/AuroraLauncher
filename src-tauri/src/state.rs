@@ -120,6 +120,28 @@ impl RuntimePaths {
         Ok(())
     }
 
+    /// 沙箱子进程会注入的目录（TEMP/APPDATA、各类缓存）。uv/pip 在安装依赖时
+    /// 会直接在 `TEMP` 下建临时目录，该目录不存在就报 “系统找不到指定的路径
+    /// (os error 3)”。启动时虽已预建，但运行中可能被外部清理（清理软件、用户
+    /// 删除、拷贝便携包时丢掉空目录等），故每次拉起子进程前补建一次；失败不
+    /// 阻塞，交由子进程自行报错。
+    pub fn ensure_sandbox_dirs(&self) {
+        let dirs = [
+            self.home.join("temp"),
+            self.home.join("AppData").join("Roaming"),
+            self.home.join("AppData").join("Local"),
+            self.home.join(".local"),
+            self.home.join("pnpm"),
+            self.root.join("cache").join("uv"),
+            self.root.join("cache").join("uv-tools"),
+            self.root.join("cache").join("pip"),
+            self.root.join("cache").join("npm"),
+        ];
+        for dir in dirs {
+            let _ = std::fs::create_dir_all(dir);
+        }
+    }
+
     /// 把旧的平铺布局迁移到 `runtime/ + data/ + cache/` 分块布局。
     /// 同盘改名很快；失败（目录被占用等）就跳过，不阻塞启动。
     fn migrate_layout(&self) {

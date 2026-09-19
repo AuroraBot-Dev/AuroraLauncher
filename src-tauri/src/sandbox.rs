@@ -18,6 +18,10 @@ impl<'a> Sandbox<'a> {
     pub fn command(&self, executable: &Path) -> Command {
         let mut cmd = Command::new(executable);
         cmd.env_clear();
+        // 注入的 TEMP/APPDATA/缓存目录必须存在：uv/pip 安装依赖时会往 TEMP
+        // 下建临时目录，缺失会直接报 os error 3。启动时预建过一次，这里每次
+        // 拉起子进程前再兜底补建，避免运行中被清理后失败。
+        self.paths.ensure_sandbox_dirs();
         let overrides = self.settings.snapshot().tool_dirs;
 
         // GUI 启动的子进程是控制台程序，隐藏它们自己的终端窗口

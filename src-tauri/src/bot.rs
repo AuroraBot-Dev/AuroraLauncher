@@ -199,10 +199,8 @@ impl BotService {
         sync.arg("sync").arg("--active").arg("--project").arg(root);
         let output = capture_sync(sync, app.clone()).await?;
         if let Err(error) = ensure_success(output, "uv sync") {
-            bail!(
-                "{error}\n提示：当前包下载源为 {}，可在「设置 → 下载源」切换（国内镜像 / 官方源）。",
-                self.settings.download_source()
-            );
+            let detail = format!("{error:#}");
+            bail!("{detail}\n{}", sync_failure_hint(&detail));
         }
         events::progress(app, "sync", 0, None, None);
         events::log(app, "success", "Python 依赖已同步");
@@ -514,6 +512,36 @@ fn ensure_success(output: Output, label: &str) -> Result<()> {
             String::from_utf8_lossy(&output.stderr)
         )
     }
+}
+
+/// 按 `uv sync` 的失败内容给出针对性提示：只有网络/下载类错误才提下载源，
+/// 其余（临时目录缺失、依赖冲突等）给对应或通用提示，避免一律甩锅“下载源”。
+fn sync_failure_hint(detail: &str) -> &'static str {
+    let lower = detail.to_ascii_lowercase();
+    // 临时目录缺失/不可写（os error 3）：启动器每次跑子进程前都会自愈，这里给可操作的兜底
+    if detail.contains("os error 3") || detail.contains("系统找不到指定的路径") {
+        return "提示：运行目录下的临时文件夹缺失或不可写，请重启启动器后重试；若仍失败，可删除运行目录下的 tool 文件夹后重新初始化。";
+    }
+    if [
+        "failed to fetch",
+        "failed to download",
+        "request failed",
+        "timed out",
+        "timeout",
+        "error sending request",
+        "connection",
+        "dns",
+        "temporary failure in name resolution",
+        "ssl",
+        "tls",
+        "certificate",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+    {
+        return "提示：下载依赖失败，可能是网络或包下载源问题，可在「设置 → 下载源」切换（国内镜像 / 官方源），或检查网络/代理后重试。";
+    }
+    "提示：请查看「运行日志」了解详细错误；常见原因是网络不通或依赖安装被中断，可重试或重新初始化。"
 }
 
 async fn capture_output(mut cmd: Command, label: &'static str) -> Result<Output> {
